@@ -51,7 +51,7 @@ const PHONE_RE = /\+?\d[\d\s().-]{7,}\d/g;
 const LINKEDIN_RE = /linkedin\.com\/in\/[\w-]+/gi;
 // LinkedIn URL as written on the page, including any https://www. prefix, query string or trailing slash
 const LINKEDIN_SHOWN_RE = /(?:https?:\/\/)?(?:[\w-]+\.)?linkedin\.com\/in\/[^\s|,;)\]>]+/gi;
-const LINKEDIN_MAX_LEN = 35; // e.g. "linkedin.com/in/firstname-lastname" fits comfortably
+const LINKEDIN_MAX_LEN = 40; // e.g. "linkedin.com/in/firstname-lastname" fits comfortably
 const PRONOUN_RE = /\b(?:I|[Mm]e|[Mm]y|[Mm]yself)\b/g;
 const PERSONAL_RE = /\b(date of birth|d\.o\.b|marital status|nationality|religion|gender)\b/gi;
 const WORD_RE = /[\p{L}\p{N}_]+/gu;
