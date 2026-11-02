@@ -578,13 +578,15 @@ export function analyse(pdf: ExtractedPdf): CheckResult {
   const doubleSpaces = lines.flatMap((l) => l.spans).filter((s) => /\S {2,}\S/.test(s.text)).length;
   if (doubleSpaces > 3) checks.push(check("spacing", "Spacing", "warn", `${doubleSpaces} lines have double spaces.`));
 
-  // 19. AI-style signals (informational only — never affects the score)
+  // 19. AI-style signals: strong evidence (weight 2) or several weaker patterns is a warning
   const signals = aiSignals(lines, paras, fullText, allWords.length);
-  if (signals.length >= 2) {
-    checks.push(check("ai", "AI-style signals", "info",
-      `${signals.length} AI-typical patterns — not proof, but worth rewording.`, signals));
-  } else if (signals.length) {
-    checks.push(check("ai", "AI-style signals", "pass", "One minor pattern.", signals));
+  const aiWeight = signals.reduce((a, s) => a + s.weight, 0);
+  const signalText = signals.map((s) => s.text);
+  if (aiWeight >= 2) {
+    checks.push(check("ai", "AI-style signals", "warn",
+      `${signals.length} AI-typical pattern${plural(signals.length)} — rewrite in your own words.`, signalText));
+  } else if (aiWeight === 1) {
+    checks.push(check("ai", "AI-style signals", "info", "One AI-typical pattern — worth a look.", signalText));
   } else {
     checks.push(check("ai", "AI-style signals", "pass", "None found."));
   }
@@ -611,11 +613,26 @@ const AI_PHRASES = [
 const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const AI_PHRASE_RE = new RegExp(`\\b(${AI_PHRASES.map(escapeRe).join("|")})\\b`, "gi");
 const EMOJI_RE = /[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{1F000}-\u{1F2FF}]/gu;
-const OUTCOME_CLAUSE_RE = /,\s+(resulting in|leading to|driving|ensuring|enabling|contributing to)\b/i;
+const OUTCOME_CLAUSE_RE = /,\s+(resulting in|leading to|driving|ensuring|enabling|contributing to|reducing|raising|cutting|increasing|improving|boosting|lowering|saving|achieving|delivering)\b/i;
+// Contact details that are clearly template/placeholder data rather than a real person's
+const PLACEHOLDER_CONTACT_RES: RegExp[] = [
+  /[\w.+-]+@(?:example|test|domain|email|yourdomain|company)\.(?:com|org|net)\b/gi, // reserved/dummy email domains
+  /\b(?:your\.?name|john\.?doe|jane\.?doe|firstname\.?lastname)@/gi,
+  /\(?\b\d{3}\)?[\s.-]*555[\s.-]*01\d{2}\b/g, // North American fictional 555-01xx numbers
+  /\b(?:555[\s.-]?555[\s.-]?5555|123[\s.-]?456[\s.-]?7890)\b/g,
+  /(?:\+44\s?|\b0)7700\s?900\s?\d{3}\b/g, // UK numbers reserved for drama
+  /(?:linkedin\.com\/in|github\.com)\/[\w-]*example[\w-]*/gi,
+];
+
+interface Signal {
+  text: string;
+  weight: 1 | 2; // 2 = strong evidence on its own
+}
 
 /** Rule-based scan for formatting and wording patterns typical of AI-generated CVs. */
-function aiSignals(lines: Line[], paras: Para[], fullText: string, wordCount: number): string[] {
-  const signals: string[] = [];
+function aiSignals(lines: Line[], paras: Para[], fullText: string, wordCount: number): Signal[] {
+  const signals: Signal[] = [];
+  const add = (text: string, weight: 1 | 2 = 1) => signals.push({ text, weight });
 
   // Overused vocabulary
   const hits = new Map<string, number>();
@@ -623,27 +640,41 @@ function aiSignals(lines: Line[], paras: Para[], fullText: string, wordCount: nu
   const totalHits = [...hits.values()].reduce((a, b) => a + b, 0);
   if (hits.size >= 4 || (totalHits / Math.max(wordCount, 1)) * 100 > 1.5) {
     const top = mostCommon(hits).slice(0, 10).map(([w, c]) => `'${w}'` + (c > 1 ? ` ×${c}` : "")).join(", ");
-    signals.push(`AI-typical words: ${top}`);
+    add(`AI-typical words: ${top}`);
   }
 
   // Leftover markdown, placeholders and chatbot text
   const md = fullText.match(/\*\*[^*\n]+\*\*|\*\*|^#{1,4}\s|`[^`\n]+`|__\w/gm) ?? [];
-  if (md.length) signals.push(`Leftover markdown: ${md.slice(0, 3).map((m) => `'${m}'`).join(", ")}`);
+  if (md.length) add(`Leftover markdown: ${md.slice(0, 3).map((m) => `'${m}'`).join(", ")}`, 2);
   const placeholders = fullText.match(/\[[A-Z][^\]\n]{2,30}\]|\bX{2,}%|\blorem ipsum\b/gi) ?? [];
   if (placeholders.length) {
-    signals.push(`Placeholder text: ${placeholders.slice(0, 4).map((p) => `'${p.split(/\s+/).join(" ")}'`).join(", ")}`);
+    add(`Placeholder text: ${placeholders.slice(0, 4).map((p) => `'${p.split(/\s+/).join(" ")}'`).join(", ")}`, 2);
   }
   if (/\b(as an ai|language model|certainly!|here is (?:a|an|your) (?:revised|updated|improved))/i.test(fullText)) {
-    signals.push("Chatbot wording ('As an AI', 'Here is your revised…')");
+    add("Chatbot wording ('As an AI', 'Here is your revised…')", 2);
+  }
+  const fakeMatches = [...new Set(PLACEHOLDER_CONTACT_RES.flatMap((re) => fullText.match(re) ?? []))];
+  // drop matches that are part of a longer one ("jane.doe@" inside "jane.doe@example.com")
+  const fakeContact = fakeMatches.filter((m) => !fakeMatches.some((o) => o !== m && o.includes(m)));
+  if (fakeContact.length) {
+    add(`Placeholder contact details: ${fakeContact.slice(0, 4).map((c) => `'${c}'`).join(", ")}`, 2);
   }
 
   // Emoji
   const emoji = fullText.match(EMOJI_RE) ?? [];
-  if (emoji.length >= 2) signals.push(`${emoji.length} emoji: ${emoji.slice(0, 6).join(" ")}`);
+  if (emoji.length >= 2) add(`${emoji.length} emoji: ${emoji.slice(0, 6).join(" ")}`);
 
-  // Em-dash overuse
+  // Typography AI tools favour: em-dashes and "·" separators
   const dashes = (fullText.match(/—/g) ?? []).length;
-  if (dashes >= 2 && (dashes / Math.max(wordCount, 1)) * 1000 > 4) signals.push(`${dashes} em-dashes (—)`);
+  if (dashes >= 3 || (dashes >= 2 && (dashes / Math.max(wordCount, 1)) * 1000 > 4)) add(`${dashes} em-dashes (—)`);
+  const dots = (fullText.match(/ · /g) ?? []).length;
+  if (dots >= 4) add(`${dots} '·' separators`);
+
+  // Formulaic metrics: "300+ clients", "from 58% to 87%"
+  const plusCounts = fullText.match(/\b\d[\d,.]*\+(?=[\s),.;]|$)/gm) ?? [];
+  if (plusCounts.length >= 3) add(`${plusCounts.length} 'N+' figures: ${plusCounts.slice(0, 5).join(", ")}`);
+  const fromTo = fullText.match(/\bfrom\s+~?[\d$£€][^\s]*\s+to\s+(?:under\s+|over\s+|~)?[\d$£€][^\s,;]*/gi) ?? [];
+  if (fromTo.length >= 2) add(`${fromTo.length} 'from X to Y' metrics, e.g. '${fromTo[0]}'`);
 
   const bullets = paras.filter((p) => p.bullet && p.words >= 5);
   if (bullets.length >= 6) {
@@ -656,29 +687,29 @@ function aiSignals(lines: Line[], paras: Para[], fullText: string, wordCount: nu
         labelled++;
       }
     }
-    if (labelled >= 3 && labelled / bullets.length >= 0.4) signals.push(`${labelled} bullets start with a bold 'Label:'`);
+    if (labelled >= 3 && labelled / bullets.length >= 0.4) add(`${labelled} bullets start with a bold 'Label:'`);
 
     // Same sentence template repeated
     const outcome = bullets.filter((p) => OUTCOME_CLAUSE_RE.test(p.text));
-    if (outcome.length >= 4 && outcome.length / bullets.length >= 0.4) {
+    if (outcome.length >= 3 && outcome.length / bullets.length >= 0.25) {
       const ex = outcome[0].text.match(OUTCOME_CLAUSE_RE)![1];
-      signals.push(`${outcome.length} of ${bullets.length} bullets use 'did X, ${ex.toLowerCase()} Y'`);
+      add(`${outcome.length} of ${bullets.length} bullets use 'did X, ${ex.toLowerCase()} Y'`);
     }
 
     // Suspiciously uniform bullet length
     const lengths = bullets.map((p) => p.words);
     const mean = lengths.reduce((a, b) => a + b, 0) / lengths.length;
     const sd = Math.sqrt(lengths.reduce((a, l) => a + (l - mean) ** 2, 0) / lengths.length);
-    if (mean >= 10 && sd / mean < 0.15) signals.push(`Bullets are all ~${Math.round(mean)} words long`);
+    if (mean >= 10 && sd / mean < 0.15) add(`Bullets are all ~${Math.round(mean)} words long`);
   }
 
   // Groups of three ("innovative, scalable and efficient")
   const triads = fullText.match(/\b[a-z]{4,}(?:ly)?, [a-z]{4,},? and [a-z]{4,}\b/g) ?? [];
-  if (triads.length >= 4) signals.push(`${triads.length} lists of three, e.g. '${triads[0]}'`);
+  if (triads.length >= 4) add(`${triads.length} lists of three, e.g. '${triads[0]}'`);
 
   // "Not just X, but Y"
   const contrast = fullText.match(/\bnot (?:just|only|merely)\b[^.\n]{3,60}\bbut\b/gi) ?? [];
-  if (contrast.length) signals.push(`'Not just X, but Y' (${contrast.length}×)`);
+  if (contrast.length) add(`'Not just X, but Y' (${contrast.length}×)`);
 
   return signals;
 }
