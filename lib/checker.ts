@@ -1,6 +1,7 @@
 // Formatting checks for a CV/resume PDF
 // Each check is {id, title, status, message, details} where status is pass | warn | fail | info.
-import type { Check, CheckResult, ExtractedPdf, Line, Status } from "./types";
+import { fontFamily } from "./fonts";
+import type { Check, CheckResult, ExtractedPdf, Fix, Line, Status } from "./types";
 
 const PT_PER_INCH = 72;
 const PAGE_SIZES: Record<string, [number, number]> = {
@@ -8,46 +9,49 @@ const PAGE_SIZES: Record<string, [number, number]> = {
   "US Letter": [612, 792],
 };
 
-const SECTION_KEYWORDS: Record<string, string[]> = {
-  experience: ["experience", "work experience", "professional experience",
-    "employment", "employment history", "work history", "career history"],
-  education: ["education", "academic background", "qualifications", "academic history"],
-  skills: ["skills", "technical skills", "core skills", "key skills",
-    "competencies", "core competencies", "expertise"],
-  summary: ["summary", "profile", "professional summary", "about me",
-    "objective", "career objective", "personal statement"],
-};
-const OPTIONAL_SECTIONS = ["projects", "certifications", "licenses certifications", "certificates",
-  "languages", "awards", "publications", "volunteering", "volunteer experience",
-  "interests", "references", "achievements", "leadership", "leadership experience",
-  "relevant coursework", "coursework", "relevant experience", "research experience",
-  "internships", "personal projects"];
-
+type SectionKind = "experience" | "education" | "skills" | "summary" | "projects" | "certifications"
+  | "coursework" | "leadership" | "other";
+// Tested against the heading with spaces/punctuation removed, so "TECHNICAL SKILLS", "CREDENTIALS & EDUCATION"
+// and headings split by colouring ("edu cation") all match. First match wins.
+const SECTION_RULES: [SectionKind, RegExp][] = [
+  ["coursework", /coursework|courses/],
+  ["certifications", /certif|licen[cs]e/],
+  ["skills", /skill|competenc|expertise|technolog|proficienc|strengths|toolkit/],
+  ["summary", /^(professional|career|personal|executive)?(summary|profile|objective)|aboutme|personalstatement/],
+  ["education", /educat|academic|qualification|degree/],
+  ["projects", /project/],
+  ["experience", /experience|employment|workhistory|careerhistory|positions|internships?$/],
+  ["leadership", /leadership|volunteer|involvement|activities|extracurricular|communityservice/],
+];
+const REQUIRED_SECTIONS: SectionKind[] = ["experience", "education", "skills"];
 // Sections where bullet points describe what you did, so should contain metrics
-const ACHIEVEMENT_SECTIONS = ["experience", "projects", "personal projects", "leadership", "leadership experience",
-  "volunteering", "volunteer experience", "relevant experience", "research experience", "internships"];
+const ACHIEVEMENT_KINDS = new Set<SectionKind>(["experience", "projects", "leadership"]);
 // Sections whose lines read best alphabetically
-const ALPHA_SECTIONS = ["skills", "certifications", "licenses certifications", "certificates",
-  "relevant coursework", "coursework"];
+const ALPHA_KINDS = new Set<SectionKind>(["skills", "certifications", "coursework"]);
 const NUMBER_WORDS = /\b(two|three|four|five|six|seven|eight|nine|ten|twelve|dozens?|hundreds?|thousands?|millions?|billions?|double[ds]?|tripled?|half)\b/i;
 
 const BULLET_CHARS = "•●▪■◦○‣∙·–-*➢►✓";
 
 const MONTHS = "(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)";
-const MONTHS_FULL = "(?:january|february|march|april|may|june|july|august|september|october|november|december)";
-const DATE_PATTERNS: [string, RegExp][] = [
-  ["Month YYYY (e.g. Jan 2021)", new RegExp(`\\b${MONTHS}\\.?\\s+(?:19|20)\\d{2}\\b`, "gi")],
-  ["Full month YYYY (e.g. January 2021)", new RegExp(`\\b${MONTHS_FULL}\\s+(?:19|20)\\d{2}\\b`, "gi")],
-  ["MM/YYYY", /\b(?:0?[1-9]|1[0-2])\/(?:19|20)\d{2}\b/g],
-  ["MM.YYYY", /\b(?:0?[1-9]|1[0-2])\.(?:19|20)\d{2}\b/g],
-  ["YYYY-MM", /\b(?:19|20)\d{2}-(?:0[1-9]|1[0-2])\b/g],
-  ["MM-YYYY", /\b(?:0[1-9]|1[0-2])-(?:19|20)\d{2}\b/g],
+const YEAR = "(?:19|20)(?:\\d{2}|[xX]{2})"; // templates often write "May 20xx"
+// "Jan 2021" or "January 2021"; the month name is captured to tell the two styles apart
+const MONTH_YEAR_RE = new RegExp(
+  `\\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sept?(?:ember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\\.?\\s+${YEAR}\\b`, "gi");
+const SEASON_YEAR_RE = new RegExp(`\\b(?:spring|summer|fall|autumn|winter)\\s+${YEAR}\\b`, "gi");
+const NUMERIC_DATE_PATTERNS: [string, RegExp][] = [
+  ["MM/YYYY", new RegExp(`\\b(?:0?[1-9]|1[0-2])\\/${YEAR}\\b`, "g")],
+  ["MM.YYYY", new RegExp(`\\b(?:0?[1-9]|1[0-2])\\.${YEAR}\\b`, "g")],
+  ["YYYY-MM", new RegExp(`\\b${YEAR}-(?:0[1-9]|1[0-2])\\b`, "g")],
+  ["MM-YYYY", new RegExp(`\\b(?:0[1-9]|1[0-2])-${YEAR}\\b`, "g")],
 ];
+const YEAR_RE = new RegExp(`\\b${YEAR}\\b`, "g");
 
 const EMAIL_RE = /^[\p{L}\p{N}_.+-]+@[\p{L}\p{N}_-]+\.[\p{L}\p{N}_.-]+$/u;
 // Tolerates whitespace/newlines around "@" and "." (PDFs often split emails into separate runs)
 const LOOSE_EMAIL_RE = /[\p{L}\p{N}_.+-]+\s*@\s*[\p{L}\p{N}_-]+(?:\s*\.\s*[\p{L}\p{N}_-]+)*\s*\.\s*[A-Za-z]{2,}\b/gu;
 const PHONE_RE = /\+?\d[\d\s().-]{7,}\d/g;
+// Template phone numbers: "xxx-xxx-xxxx", "701-555-XXXX"
+const PHONE_PLACEHOLDER_RE = /\b(?:\d{3}|x{3})[-. )]+(?:\d{3}|x{3})[-. ](?:\d{4}|x{4})\b/i;
 const LINKEDIN_RE = /linkedin\.com\/in\/[\w-]+/gi;
 // LinkedIn URL as written on the page, including any https://www. prefix, query string or trailing slash
 const LINKEDIN_SHOWN_RE = /(?:https?:\/\/)?(?:[\w-]+\.)?linkedin\.com\/in\/[^\s|,;)\]>]+/gi;
@@ -85,17 +89,6 @@ function mostCommon<K>(counter: Map<K, number>): [K, number][] {
 }
 function bump<K>(counter: Map<K, number>, key: K, by = 1) {
   counter.set(key, (counter.get(key) ?? 0) + by);
-}
-
-/** 'ABCDEF+Calibri-BoldItalic' or 'ABCDEF+Arial Bold' -> 'Calibri' / 'Arial' */
-function baseFont(name: string) {
-  name = name.split("+").pop() ?? name;
-  name = name.split(/[-,]/)[0].trim();
-  // pdf.js separates style words with spaces ("Arial Unicode MS Regular"), PyMuPDF with hyphens
-  name = name.replace(/(\s*(Bold|Italic|Oblique|Regular|Light|Medium|Semibold|Black))+$/i, "");
-  name = name.replace(/\s*(MT|PS|Std|Pro)$/, "");
-  name = name.replace(/(Bold|Italic|Oblique|Regular|Light|Medium|Semibold|Black)+$/i, "").trim();
-  return name || "Unknown";
 }
 
 function findEmails(texts: string[]) {
@@ -167,22 +160,85 @@ function paragraphs(lines: Line[], headingTexts: Set<string>): Para[] {
   return paras;
 }
 
-const normaliseHeading = (text: string) => text.toLowerCase().replace(/[^a-z ]/g, "").trim();
+type Heading = Line & { standsOut: boolean; kind: SectionKind };
 
-type Heading = Line & { standsOut: boolean };
+function sectionKind(text: string): SectionKind | null {
+  const key = text.toLowerCase().replace(/[^a-z]/g, "");
+  return SECTION_RULES.find(([, re]) => re.test(key))?.[0] ?? null;
+}
 
-function findHeadings(lines: Line[], bodySize: number) {
-  const found = new Map<string, Heading>();
+/** Short, label-like line: no digits, no sentence punctuation, not a bullet. */
+function looksLikeHeading(ln: Line) {
+  const text = ln.text.trim();
+  const count = words(text).length;
+  return count >= 1 && count <= 5 && text.length <= 45 && !/\d/.test(text) && !/[.,;]$/.test(text)
+    && !bulletGlyph(ln) && /\p{L}/u.test(text);
+}
+
+const standsOut = (ln: Line, bodySize: number) =>
+  ln.bold || ln.size > bodySize + 0.4 || isUpper(ln.text) || /csc\d|smallcaps|-sc$/i.test(ln.font);
+const headingStyle = (ln: Line) => `${Math.round(ln.size * 2) / 2}|${ln.bold}|${isUpper(ln.text)}`;
+
+/**
+ * Section headings in reading order. Recognised ones ("Work Experience", "TECHNICAL SKILLS") get a kind;
+ * other lines in the same style with space above them ("Patents", "Honors & Awards") are headings too,
+ * so one section doesn't run into the next.
+ */
+function findHeadings(lines: Line[], bodySize: number): Heading[] {
+  const known = new Map<Line, SectionKind>();
   for (const ln of lines) {
-    const norm = normaliseHeading(ln.text);
-    if (!norm || norm.split(/\s+/).length > 4) continue;
-    const standsOut = ln.bold || ln.size > bodySize + 0.4 || isUpper(ln.text);
-    for (const [key, list] of Object.entries(SECTION_KEYWORDS)) {
-      if (list.includes(norm) && !found.has(key)) found.set(key, { ...ln, standsOut });
-    }
-    if (OPTIONAL_SECTIONS.includes(norm) && !found.has(norm)) found.set(norm, { ...ln, standsOut });
+    const kind = looksLikeHeading(ln) && standsOut(ln, bodySize) && words(ln.text).length <= 4 ? sectionKind(ln.text) : null;
+    if (kind) known.set(ln, kind);
   }
-  return found;
+  if (!known.size) return [];
+  const styles = new Map<string, number>();
+  for (const ln of known.keys()) bump(styles, headingStyle(ln));
+  const style = mostCommon(styles)[0][0];
+  // A bold entry title that happens to contain a keyword ("Hospital Volunteer", "Senior Capstone Project")
+  // isn't a heading unless it looks like one: the usual heading style, capitals at least as large, or clearly larger.
+  const styleSize = Number(style.split("|")[0]);
+  for (const ln of [...known.keys()]) {
+    const looksRight = headingStyle(ln) === style || (isUpper(ln.text) && ln.size >= styleSize - 0.5)
+      || ln.size >= styleSize + 1;
+    if (!looksRight) known.delete(ln);
+  }
+
+  const headings: Heading[] = [];
+  lines.forEach((ln, i) => {
+    const kind = known.get(ln);
+    if (kind) {
+      headings.push({ ...ln, standsOut: true, kind });
+      return;
+    }
+    const prev = lines[i - 1];
+    const spaceAbove = !prev || prev.page !== ln.page || ln.bbox[1] - prev.bbox[3] > 0.35 * ln.size;
+    if (headingStyle(ln) === style && looksLikeHeading(ln) && standsOut(ln, bodySize) && spaceAbove) {
+      headings.push({ ...ln, standsOut: true, kind: "other" });
+    }
+  });
+  return headings;
+}
+
+/**
+ * Lines of the page body, without a running header/footer that sits apart from the content
+ * ("John Doe – 1/3", "© European Union", "Last updated in Mar 2026").
+ */
+function bodyLines(pageLines: Line[], pageHeight: number, bodySize: number): Line[] {
+  let sorted = [...pageLines].sort((a, b) => a.bbox[1] - b.bbox[1]);
+  if (sorted.length < 2) return sorted;
+  const height = (ln: Line) => ln.bbox[3] - ln.bbox[1];
+  const last = sorted[sorted.length - 1];
+  const aboveLast = [...sorted].reverse().find((ln) => ln.bbox[1] < last.bbox[1] - 2);
+  if (aboveLast && last.bbox[1] > 0.85 * pageHeight && last.bbox[1] - aboveLast.bbox[3] > 2 * height(last)) {
+    sorted = sorted.filter((ln) => ln.bbox[1] < last.bbox[1] - 2);
+  }
+  const first = sorted[0];
+  const belowFirst = sorted.find((ln) => ln.bbox[1] > first.bbox[1] + 2);
+  if (belowFirst && first.bbox[3] < 0.08 * pageHeight && first.size <= bodySize
+    && belowFirst.bbox[1] - first.bbox[3] > 1.5 * height(first)) {
+    sorted = sorted.filter((ln) => ln.bbox[1] > first.bbox[1] + 2);
+  }
+  return sorted;
 }
 
 // ---------- the checks ----------
@@ -197,9 +253,10 @@ export function analyse(pdf: ExtractedPdf): CheckResult {
   // 1. Text is selectable (ATS readable)
   if (allWords.length < 30) {
     checks.push(check("text", "Readable text", "fail",
-      "No selectable text — likely a scanned image that ATS can't read.",
+      "No selectable text — the CV is an image (or its text was turned into shapes), so ATS can't read it.",
       ["Export straight to PDF from Word, Google Docs or LaTeX."]));
-    return finish(checks, n, allWords.length);
+    checks[0].fix = { task: "My CV PDF has no selectable text (it's an image, or the text was converted to shapes), so applicant tracking systems can't read it. Tell me step by step how to export a text-based PDF from the editor I made it with — ask me whether it's Word, Google Docs, Canva or LaTeX first." };
+    return finish(checks, n, allWords.length, fullText);
   }
   checks.push(check("text", "Readable text", "pass", "ATS software can read your CV."));
 
@@ -223,39 +280,20 @@ export function analyse(pdf: ExtractedPdf): CheckResult {
     checks.push(check("pagesize", "Page size", "pass", `${labels[0]}.`));
   }
 
-  // 4. Margins
-  const marginIssues: string[] = [];
-  pdf.pages.forEach(({ width: W, height: H }, pno) => {
-    const pl = lines.filter((l) => l.page === pno);
-    if (!pl.length) return;
-    const left = Math.min(...pl.map((l) => l.bbox[0]));
-    const right = W - Math.max(...pl.map((l) => l.bbox[2]));
-    const top = Math.min(...pl.map((l) => l.bbox[1]));
-    const bottom = H - Math.max(...pl.map((l) => l.bbox[3]));
-    for (const [side, val] of [["left", left], ["right", right], ["top", top]] as const) {
-      if (val < 0.4 * PT_PER_INCH) marginIssues.push(`Page ${pno + 1}: ${side} margin is only ${mm(val)} mm`);
-      else if (val > 1.6 * PT_PER_INCH && side !== "right") // ragged-right text is normal
-        marginIssues.push(`Page ${pno + 1}: ${side} margin is large (${mm(val)} mm)`);
-    }
-    if (pno < n - 1 && bottom < 0.4 * PT_PER_INCH)
-      marginIssues.push(`Page ${pno + 1}: bottom margin is only ${mm(bottom)} mm`);
-  });
-  checks.push(marginIssues.length
-    ? check("margins", "Margins", "warn", "Keep margins between 12–40 mm.", marginIssues)
-    : check("margins", "Margins", "pass", "Within 12–40 mm."));
-
   // 5. Font families
   const charByFont = new Map<string, number>();
   const charBySize = new Map<number, number>();
   for (const ln of lines) {
     for (const s of ln.spans) {
+      const family = fontFamily(s.font); // null for bullet/icon/maths fonts
+      if (!family) continue;
       const c = s.text.trim().length;
-      bump(charByFont, baseFont(s.font), c);
+      bump(charByFont, family, c);
       bump(charBySize, Math.round(s.size * 2) / 2, c);
     }
   }
   const totalChars = [...charByFont.values()].reduce((a, b) => a + b, 0) || 1;
-  // ignore fonts used for a trivial number of characters (icons, bullets)
+  // ignore fonts used for a trivial number of characters
   const fonts = mostCommon(charByFont).filter(([, c]) => c / totalChars > 0.01).map(([f]) => f);
   const fontDetails = fonts.map((f) => `${f}: ${pct(charByFont.get(f)! / totalChars)} of text`);
   if (fonts.length <= 2) {
@@ -288,6 +326,27 @@ export function analyse(pdf: ExtractedPdf): CheckResult {
       `${sigSizes.length} sizes, clear hierarchy.`, sizeDetails));
   }
 
+  // 4. Margins
+  const marginIssues: string[] = [];
+  pdf.pages.forEach(({ width: W, height: H }, pno) => {
+    const pl = bodyLines(lines.filter((l) => l.page === pno), H, bodySize);
+    if (!pl.length) return;
+    const left = Math.min(...pl.map((l) => l.bbox[0]));
+    const right = W - Math.max(...pl.map((l) => l.bbox[2]));
+    const top = Math.min(...pl.map((l) => l.bbox[1]));
+    const bottom = H - Math.max(...pl.map((l) => l.bbox[3]));
+    for (const [side, val] of [["left", left], ["right", right], ["top", top]] as const) {
+      if (val < 0.4 * PT_PER_INCH) marginIssues.push(`Page ${pno + 1}: ${side} margin is only ${mm(val)} mm`);
+      else if (val > 1.6 * PT_PER_INCH && side !== "right") // ragged-right text is normal
+        marginIssues.push(`Page ${pno + 1}: ${side} margin is large (${mm(val)} mm)`);
+    }
+    if (pno < n - 1 && bottom < 0.4 * PT_PER_INCH)
+      marginIssues.push(`Page ${pno + 1}: bottom margin is only ${mm(bottom)} mm`);
+  });
+  checks.push(marginIssues.length
+    ? check("margins", "Margins", "warn", "Keep margins between 12–40 mm.", marginIssues)
+    : check("margins", "Margins", "pass", "Within 12–40 mm."));
+
   // 7. Contact details
   const emails = findEmails([fullText, lines.map((l) => l.text).join(" ")]);
   const linkedin = fullText.match(LINKEDIN_RE) ?? [];
@@ -300,7 +359,7 @@ export function analyse(pdf: ExtractedPdf): CheckResult {
     const digits = p.replace(/\D/g, "").length;
     return digits >= 8 && digits <= 15 && !/^[\d\s–-]*(?:19|20)\d{2}\s*[-–]\s*(?:19|20)\d{2}$/.test(p.trim());
   });
-  const hasPhone = phones.length > 0 || links.some((u) => u.startsWith("tel:"));
+  const hasPhone = phones.length > 0 || PHONE_PLACEHOLDER_RE.test(phoneText) || links.some((u) => u.startsWith("tel:"));
   const missing = ([["email", hasEmail], ["phone number", hasPhone]] as const).filter(([, ok]) => !ok).map(([k]) => k);
   const contactDetails = [
     `Email: ${emails.length ? "✓ " + emails[0] : hasEmail ? "✓" : "✗ not found"}`,
@@ -309,9 +368,11 @@ export function analyse(pdf: ExtractedPdf): CheckResult {
   ];
   if (!hasEmail) {
     checks.push(check("contact", "Contact details", "fail", "No email address found.", contactDetails));
-  } else if (missing.length || !hasLinkedin) {
+  } else if (missing.length) {
     checks.push(check("contact", "Contact details", "warn",
       "Missing: " + [...missing, ...(hasLinkedin ? [] : ["LinkedIn profile"])].join(", ") + ".", contactDetails));
+  } else if (!hasLinkedin) {
+    checks.push(check("contact", "Contact details", "info", "Email and phone found — consider adding LinkedIn.", contactDetails));
   } else {
     checks.push(check("contact", "Contact details", "pass", "Email, phone and LinkedIn.", contactDetails));
   }
@@ -349,10 +410,12 @@ export function analyse(pdf: ExtractedPdf): CheckResult {
 
   // 8. Section headings
   const headings = findHeadings(lines, bodySize);
-  const required = ["experience", "education", "skills"];
-  const missingSections = required.filter((s) => !headings.has(s));
+  const knownHeadings = headings.filter((h) => h.kind !== "other");
+  const kinds = new Set(knownHeadings.map((h) => h.kind));
+  const required = REQUIRED_SECTIONS;
+  const missingSections = required.filter((k) => !kinds.has(k));
   const foundList = [
-    ...[...headings.entries()].map(([k, v]) => `✓ ${titleCase(k)}  ("${v.text}")`),
+    ...knownHeadings.map((h) => `✓ ${titleCase(h.kind)}  ("${h.text}")`),
     ...missingSections.map((s) => `✗ ${titleCase(s)}`),
   ];
   if (!missingSections.length) {
@@ -365,7 +428,7 @@ export function analyse(pdf: ExtractedPdf): CheckResult {
   }
 
   // 8b. Does this look like a CV at all? (contact details + standard sections)
-  const datesLike = new RegExp(`\\b${MONTHS}\\w*\\.?\\s+(?:19|20)\\d{2}|\\b(?:19|20)\\d{2}\\s*[–-]`, "i").test(fullText);
+  const datesLike = new RegExp(`\\b${MONTHS}\\w*\\.?\\s+${YEAR}|\\b${YEAR}\\s*[–-]`, "i").test(fullText);
   const cvSignals = [hasEmail, hasPhone, hasLinkedin, required.length - missingSections.length >= 2, datesLike]
     .filter(Boolean).length;
   if (cvSignals <= 1) {
@@ -376,8 +439,8 @@ export function analyse(pdf: ExtractedPdf): CheckResult {
   }
 
   // 9. Heading styling consistency
-  if (headings.size >= 2) {
-    const hs = [...headings.values()];
+  if (knownHeadings.length >= 2) {
+    const hs = knownHeadings;
     const styles = new Set(hs.map((h) => `${h.size}|${h.bold}|${isUpper(h.text)}`));
     const notEmphasised = hs.filter((h) => !h.standsOut);
     const detail = hs.map((h) => `"${h.text}": ${h.size}pt${h.bold ? ", bold" : ""}${isUpper(h.text) ? ", caps" : ""}`);
@@ -386,18 +449,33 @@ export function analyse(pdf: ExtractedPdf): CheckResult {
     else checks.push(check("headingstyle", "Heading consistency", "pass", "All headings match.", detail));
   }
 
-  // 10. Date format consistency
-  let dateText = fullText;
+  // 10. Date format consistency. "May", "June" and "July" fit both month styles (AP style abbreviates
+  // the rest), and seasons ("Fall 2024") sit fine next to months.
+  let dateText = fullText.replace(SEASON_YEAR_RE, " ");
+  const abbreviated: string[] = [];
+  const fullNames: string[] = [];
+  let neutral = 0;
+  for (const m of dateText.matchAll(MONTH_YEAR_RE)) {
+    const month = m[1].toLowerCase();
+    if (["may", "june", "july"].includes(month)) neutral++;
+    else (month.length > 4 ? fullNames : abbreviated).push(m[0]);
+  }
+  dateText = dateText.replace(MONTH_YEAR_RE, " ");
   const usedFormats: [string, string[]][] = [];
-  for (const [name, pat] of DATE_PATTERNS) {
+  if (abbreviated.length) usedFormats.push(["Month YYYY (e.g. Jan 2021)", abbreviated]);
+  if (fullNames.length) usedFormats.push(["Full month YYYY (e.g. January 2021)", fullNames]);
+  for (const [name, pat] of NUMERIC_DATE_PATTERNS) {
     const hits = dateText.match(pat);
     if (hits) {
       usedFormats.push([name, hits]);
       dateText = dateText.replace(pat, " "); // avoid double counting
     }
   }
-  if (!usedFormats.length) {
-    checks.push(/\b(?:19|20)\d{2}\b/.test(fullText)
+  const seasonsOrNeutral = neutral > 0 || fullText.search(SEASON_YEAR_RE) >= 0;
+  if (!usedFormats.length && seasonsOrNeutral) {
+    checks.push(check("dates", "Date format", "pass", "Consistent: Month YYYY."));
+  } else if (!usedFormats.length) {
+    checks.push(fullText.search(YEAR_RE) >= 0
       ? check("dates", "Date format", "info", "Years only — consider adding months.")
       : check("dates", "Date format", "warn", "No dates found."));
   } else if (usedFormats.length === 1) {
@@ -442,8 +520,8 @@ export function analyse(pdf: ExtractedPdf): CheckResult {
   else checks.push(check("wordcount", "Amount of content", "pass", `${wc} words.`));
 
   // 13. Long paragraphs and bullets
-  const headingTexts = new Set([...headings.values()].map((h) => h.text));
-  const sectionKey = new Map([...headings.entries()].map(([k, h]) => [h.text, k]));
+  const headingTexts = new Set(headings.map((h) => h.text));
+  const sectionKindOf = new Map(headings.map((h) => [h.text, h.kind]));
   const paras = paragraphs(lines, headingTexts);
   const longItems: string[] = [];
   for (const p of paras) {
@@ -474,7 +552,7 @@ export function analyse(pdf: ExtractedPdf): CheckResult {
     }
   }
   pdf.pages.forEach(({ height: H }, pno) => {
-    const pl = lines.filter((l) => l.page === pno).sort((a, b) => a.bbox[1] - b.bbox[1]);
+    const pl = bodyLines(lines.filter((l) => l.page === pno), H, bodySize);
     if (!pl.length) return;
     const top = pl[0].bbox[1];
     let lowest = pl[0].bbox[3];
@@ -499,9 +577,10 @@ export function analyse(pdf: ExtractedPdf): CheckResult {
   // (compares whole lines, e.g. "Languages: …" vs "Tools: …"; the order of items within a line is ignored)
   const unsortedLists: string[] = [];
   let checkedLists = 0;
-  for (const [key, h] of headings) {
-    if (!ALPHA_SECTIONS.includes(key)) continue;
-    const entries: string[] = [];
+  for (const h of headings) {
+    if (!ALPHA_KINDS.has(h.kind)) continue;
+    const entries: { name: string; year: number | null }[] = [];
+    let sentenceLike = false;
     for (const p of paras) {
       if (p.section !== h.text) continue;
       p.lines.forEach((lineText, i) => {
@@ -511,13 +590,23 @@ export function analyse(pdf: ExtractedPdf): CheckResult {
         const prevLine = i > 0 ? p.lines[i - 1].trimEnd() : "";
         const continuation = i > 0 && (isLowerStart(text) || /(,|&|and)$/.test(prevLine));
         if (continuation && entries.length) return;
-        // name each line by its leading label/title (before ":", " – ", "(" or ",")
-        entries.push(text.split(/:|\s[–—|·-]\s|\(|,/)[0].trim());
+        // skills lines are "Label: items" or bullets; other lines are table cells or wrapped text
+        const isEntry = h.kind !== "skills" || p.bullet || /^[^:]{1,40}:/.test(text);
+        if (!isEntry) return;
+        // name each line by its leading label/title, ignoring a leading year ("2023 AWS Certified…")
+        const name = text.replace(new RegExp(`^(?:\\(?${YEAR}\\)?[\\s–-]*)+`), "").split(/:|\s[–—|·-]\s|\(|,/)[0].trim();
+        if (words(name).length > 5) sentenceLike = true;
+        const year = text.match(new RegExp(YEAR));
+        if (name) entries.push({ name, year: year ? Number(year[0].replace(/x/gi, "0")) : null });
       });
     }
-    const named = entries.filter(Boolean);
-    if (named.length < 2) continue;
+    if (entries.length < 2 || sentenceLike) continue; // sentences or a table, not a list of named lines
+    // lists ordered by date (newest or oldest first) are fine too
+    const years = entries.map((e) => e.year);
+    if (years.every((y) => y !== null) && new Set(years).size > 1
+      && (years.every((y, i) => i === 0 || y! <= years[i - 1]!) || years.every((y, i) => i === 0 || y! >= years[i - 1]!))) continue;
     checkedLists++;
+    const named = entries.map((e) => e.name);
     const sorted = sortLower(named);
     if (!sameOrder(named, sorted)) unsortedLists.push(`${titleCase(h.text)}: ${named.join(", ")}  →  ${sorted.join(", ")}`);
   }
@@ -525,18 +614,14 @@ export function analyse(pdf: ExtractedPdf): CheckResult {
   else if (checkedLists) checks.push(check("alpha", "Alphabetical order", "pass", "Lines are alphabetical."));
 
   // 13d. Quantified achievements
+  let unquantifiedTexts: string[] = [];
   const achievementItems = paras.filter((p) =>
-    ACHIEVEMENT_SECTIONS.includes(sectionKey.get(p.section ?? "") ?? normaliseHeading(p.section ?? ""))
-    && (p.bullet || p.words >= 8));
+    ACHIEVEMENT_KINDS.has(sectionKindOf.get(p.section ?? "") ?? "other") && (p.bullet || p.words >= 8));
   if (achievementItems.length) {
-    const hasMetric = (text: string) => {
-      for (const [, pat] of DATE_PATTERNS) text = text.replace(pat, " ");
-      text = text.replace(/\b(?:19|20)\d{2}\b/g, " "); // years
-      return /\d/.test(text) || NUMBER_WORDS.test(text);
-    };
     const bulletItems = achievementItems.filter((p) => p.bullet);
     const items = bulletItems.length ? bulletItems : achievementItems;
     const unquantified = items.filter((p) => !hasMetric(p.text));
+    unquantifiedTexts = unquantified.map((p) => stripBullet(p.text));
     const ratio = 1 - unquantified.length / items.length;
     const detail = unquantified.slice(0, 4).map((p) => `No numbers: "${stripBullet(p.text).split(/\s+/).slice(0, 7).join(" ")}…"`);
     if (unquantified.length > 4) detail.push(`…and ${unquantified.length - 4} more`);
@@ -591,10 +676,163 @@ export function analyse(pdf: ExtractedPdf): CheckResult {
     checks.push(check("ai", "AI-style signals", "pass", "None found."));
   }
 
-  return finish(checks, n, allWords.length);
+  attachFixes(checks, {
+    pages: n, wordCount: wc, perPage, paras, bulletTexts, usedFormats, missingContact: missing, hasLinkedin,
+    missingSections, unsortedLists, signals: signalText, unquantified: unquantifiedTexts,
+    personal, spaceIssues,
+  });
+  return finish(checks, n, allWords.length, fullText);
+}
+
+/** Does a bullet contain a figure (ignoring dates and years)? */
+function hasMetric(text: string) {
+  text = text.replace(MONTH_YEAR_RE, " ").replace(SEASON_YEAR_RE, " ");
+  for (const [, pat] of NUMERIC_DATE_PATTERNS) text = text.replace(pat, " ");
+  text = text.replace(YEAR_RE, " "); // years
+  return /\d/.test(text) || NUMBER_WORDS.test(text);
 }
 
 const isLowerStart = (s: string) => s[0] !== s[0].toUpperCase() && s[0] === s[0].toLowerCase();
+
+// ---------- fix prompts ----------
+
+interface FixContext {
+  pages: number;
+  wordCount: number;
+  perPage: number;
+  paras: Para[];
+  bulletTexts: string[];
+  usedFormats: [string, string[]][];
+  missingContact: string[];
+  hasLinkedin: boolean;
+  missingSections: SectionKind[];
+  unsortedLists: string[];
+  signals: string[];
+  unquantified: string[];
+  personal: string[];
+  spaceIssues: string[];
+}
+
+const MAX_QUOTED = 10;
+const quoteList = (xs: string[]) =>
+  xs.slice(0, MAX_QUOTED).map((x) => `- "${x}"`).join("\n") + (xs.length > MAX_QUOTED ? `\n- …and ${xs.length - MAX_QUOTED} more like these` : "");
+const KEEP_FACTS = "Keep every number and fact, and don't invent any.";
+// Layout problems: the assistant can't see the file, so ask for instructions for the user's editor
+const EDITOR_FIX_IDS = ["pagesize", "margins", "fonts", "bodysize", "sizes", "headingstyle", "spacing", "columns", "images"];
+
+/** Attach to each result that isn't a pass the task to give an AI assistant (rules are added in lib/prompts.ts). */
+function attachFixes(checks: Check[], ctx: FixContext) {
+  const fixes = new Map<string, Fix>();
+  const status = (id: string) => checks.find((c) => c.id === id)?.status;
+
+  for (const c of checks) {
+    if (EDITOR_FIX_IDS.includes(c.id)) {
+      const details = c.details.length ? ` (${c.details.join("; ")})` : "";
+      fixes.set(c.id, { task: `${c.message}${details} Tell me step by step how to fix this in the editor I made my CV with — ask me first whether it's Word, Google Docs, Canva or LaTeX.` });
+    }
+  }
+
+  if (status("pages") !== "pass") {
+    const target = ctx.pages > 2 ? "2 pages" : "1 page";
+    fixes.set("pages", { needsCv: true, task: `My CV is ${ctx.pages} pages; most roles expect 1–2. Suggest what to cut or shorten to get it to ${target} (older or less relevant roles, repeated points, long descriptions). Quote each line you'd cut or shorten and give the shortened version. Don't add anything.` });
+  }
+  if (status("wordcount") === "warn") {
+    fixes.set("wordcount", ctx.wordCount < 200
+      ? { needsCv: true, task: `My CV is only ${ctx.wordCount} words. Don't write content for me: ask me up to 8 specific questions about my achievements, projects, responsibilities and results so I can add real detail.` }
+      : { needsCv: true, task: `My CV is dense (~${Math.round(ctx.perPage)} words per page). Quote the lines to trim and give tighter versions. ${KEEP_FACTS}` });
+  }
+
+  if (ctx.missingContact.length) {
+    fixes.set("contact", { task: `My CV is missing my ${ctx.missingContact.join(" and ")}${ctx.hasLinkedin ? "" : " (and has no LinkedIn link)"}. Don't make up contact details: give me a clean one-line contact header (e.g. City · email · phone · linkedin.com/in/name) with [placeholders] for what's missing.` });
+  } else if (!ctx.hasLinkedin) {
+    fixes.set("contact", { task: "My CV has no LinkedIn link. Show me how to add a short one (linkedin.com/in/firstname-lastname) to my contact line, with a [placeholder] for my profile name." });
+  }
+  const linkedin = checks.find((c) => c.id === "linkedin");
+  if (linkedin) {
+    fixes.set("linkedin", { task: `My LinkedIn link has these problems: ${linkedin.details.join("; ")}. Tell me how to set a custom URL like linkedin.com/in/firstname-lastname in LinkedIn's settings, and how to write it on my CV (no https://www.).` });
+  }
+  fixes.set("email", { needsCv: true, task: "My email address doesn't look professional. Suggest 3 professional formats based on my name (e.g. firstname.lastname@gmail.com) — I'll create the address myself." });
+
+  if (ctx.missingSections.length) {
+    const names = ctx.missingSections.map(titleCase).join(" and ");
+    fixes.set("sections", { needsCv: true, task: `My CV has no ${names} section heading. Using only what's already in my CV, tell me which existing lines belong under ${ctx.missingSections.length > 1 ? "them" : "it"} and what standard heading name to use. If I simply don't have that content, say so and ask me questions instead — don't invent any.` });
+  }
+
+  if (status("dates") === "warn" && ctx.usedFormats.length > 1) {
+    const [target] = [...ctx.usedFormats].sort((a, b) => b[1].length - a[1].length)[0];
+    const all = [...new Set(ctx.usedFormats.flatMap(([, v]) => v))];
+    fixes.set("dates", { task: `My CV mixes date formats (${ctx.usedFormats.map(([k]) => k).join(", ")}). Convert every date below to the ${target} format and reply with each one converted:\n${quoteList(all)}` });
+  } else if (status("dates") === "warn") {
+    fixes.set("dates", { needsCv: true, task: "My CV has no dates. Ask me for the start and end month and year of each role and degree — don't guess them — then show me where to put them." });
+  } else if (status("dates") === "info") {
+    fixes.set("dates", { needsCv: true, task: "My CV only shows years. Ask me for the month of each start and end date so I can use the 'Mon YYYY – Mon YYYY' format — don't guess any months." });
+  }
+
+  if (status("bullets") === "warn" || status("bullets") === "info") {
+    const noBullets = checks.find((c) => c.id === "bullets")!.message.startsWith("No");
+    fixes.set("bullets", noBullets
+      ? { needsCv: true, task: `My CV has no bullet points. Rewrite the description under each role as 2–4 bullet points, each starting with an action verb. ${KEEP_FACTS}` }
+      : { task: "My CV mixes bullet symbols. Tell me how to make them all the same in the editor I made my CV with — ask me first whether it's Word, Google Docs, Canva or LaTeX." });
+  }
+  if (status("punct") === "warn") {
+    const withStop = ctx.bulletTexts.filter((t) => t.trimEnd().endsWith("."));
+    const addStops = withStop.length >= ctx.bulletTexts.length / 2;
+    const targets = (addStops ? ctx.bulletTexts.filter((t) => !t.trimEnd().endsWith(".")) : withStop).map(stripBullet);
+    fixes.set("punct", { task: `Make my bullet points consistent: ${addStops ? "add a full stop at the end of each of these" : "remove the full stop at the end of each of these"}, changing nothing else:\n${quoteList(targets)}` });
+  }
+
+  const long = ctx.paras.filter((p) => p.words > (p.bullet ? 40 : 60));
+  if (long.length === 1) {
+    const p = long[0];
+    fixes.set("paragraphs", { task: `Rewrite this ${p.words}-word ${p.bullet ? "bullet point" : "paragraph"} in under ${p.bullet ? 40 : 60} words. ${KEEP_FACTS}\n"${stripBullet(p.text)}"` });
+  } else if (long.length) {
+    const items = long.slice(0, MAX_QUOTED).map((p) => `- "${stripBullet(p.text)}" (${p.words} words)`).join("\n");
+    fixes.set("paragraphs", { task: `Rewrite each of these so bullet points are under 40 words and paragraphs under 60. ${KEEP_FACTS}\n${items}` });
+  }
+
+  if (status("space") === "warn") {
+    const wordCount = (line: string) => line.split(/\s+/).filter(Boolean).length; // as the check counts them
+    const orphans = ctx.paras.filter((p) => p.lines.length >= 2 && wordCount(p.lines[p.lines.length - 1]) <= 2
+      && wordCount(p.lines[p.lines.length - 2]) >= 6);
+    const emptyAreas = ctx.spaceIssues.filter((x) => /empty/.test(x));
+    const parts: string[] = [];
+    if (orphans.length) parts.push(`Each of these ends with a line holding only 1–2 words. Trim each by a few words so it takes one line less. ${KEEP_FACTS}\n${quoteList(orphans.map((p) => stripBullet(p.text)))}`);
+    if (emptyAreas.length) parts.push(`My CV has empty space (${emptyAreas.join("; ")}). Don't write content for me: ask me up to 5 questions about achievements, projects or skills I may have left out, so I can fill it with real information.`);
+    if (!parts.length) parts.push(`My CV wastes space: ${ctx.spaceIssues.join("; ")}. Tell me how to tighten it in the editor I made my CV with — ask me first whether it's Word, Google Docs, Canva or LaTeX.`);
+    fixes.set("space", { needsCv: emptyAreas.length > 0, task: parts.join("\n\nThen: ") });
+  }
+
+  if (ctx.unsortedLists.length) {
+    fixes.set("alpha", { task: `Put the lines of these sections in alphabetical order (by the label at the start of each line), changing nothing else. Current order → wanted order:\n${ctx.unsortedLists.map((l) => `- ${l}`).join("\n")}` });
+  }
+
+  if ((status("metrics") === "warn" || status("metrics") === "info") && ctx.unquantified.length) {
+    fixes.set("metrics", { task: `These bullet points have no numbers. Rewrite each to show scale or impact (how many, how often, how much, % change, time or money saved). Don't make up numbers: put a placeholder like [X%] or [number] wherever a figure would help, and ask me for the real values.\n${quoteList(ctx.unquantified)}` });
+  }
+
+  if (status("pronouns") === "warn") {
+    const withPronouns = ctx.paras.filter((p) => (p.text.match(PRONOUN_RE) ?? []).length > 0);
+    fixes.set("pronouns", { task: `Rewrite these without "I", "me" or "my", starting each with an action verb. ${KEEP_FACTS}\n${quoteList(withPronouns.map((p) => stripBullet(p.text)))}` });
+  }
+  if (ctx.personal.length) {
+    fixes.set("personal", { needsCv: true, task: `Tell me exactly which lines to delete to remove these personal details from my CV: ${ctx.personal.join(", ")}. Change nothing else.` });
+  }
+
+  if (status("ai") === "warn" || status("ai") === "info") {
+    const aiLike = ctx.paras.filter((p) => (p.text.match(AI_PHRASE_RE) ?? []).length > 0 || /—/.test(p.text)
+      || OUTCOME_CLAUSE_RE.test(p.text) || /\b\d[\d,.]*\+(?=[\s),.;]|$)/.test(p.text));
+    const fakeContact = ctx.signals.find((x) => x.startsWith("Placeholder contact"));
+    const parts = [`My CV reads as AI-generated (${ctx.signals.join("; ")}).`];
+    if (aiLike.length) parts.push(`Rewrite these lines in plain, specific language in my own voice: no buzzwords (e.g. 'spearheaded', 'leveraged', 'robust'), commas or full stops instead of em-dashes, and varied sentence structure. ${KEEP_FACTS}\n${quoteList(aiLike.map((p) => stripBullet(p.text)))}`);
+    if (fakeContact) parts.push("It also contains placeholder contact details. Remind me to replace them with my real ones — don't make any up.");
+    fixes.set("ai", { needsCv: !aiLike.length, task: parts.join("\n") + (aiLike.length ? "" : " Point out the lines that sound most AI-written and suggest plainer wording for each.") });
+  }
+
+  for (const c of checks) {
+    const fix = fixes.get(c.id);
+    if (fix && c.status !== "pass") c.fix = fix;
+  }
+}
 
 // ---------- AI-style signals ----------
 
@@ -622,6 +860,7 @@ const PLACEHOLDER_CONTACT_RES: RegExp[] = [
   /\b(?:555[\s.-]?555[\s.-]?5555|123[\s.-]?456[\s.-]?7890)\b/g,
   /(?:\+44\s?|\b0)7700\s?900\s?\d{3}\b/g, // UK numbers reserved for drama
   /(?:linkedin\.com\/in|github\.com)\/[\w-]*example[\w-]*/gi,
+  /\b(?:x{3}[-. ]x{3}[-. ]x{4}|\d{3}[-. ]\d{3}[-. ]x{4})\b/gi, // "xxx-xxx-xxxx", "701-555-XXXX"
 ];
 
 interface Signal {
@@ -644,13 +883,15 @@ function aiSignals(lines: Line[], paras: Para[], fullText: string, wordCount: nu
   }
 
   // Leftover markdown, placeholders and chatbot text
-  const md = fullText.match(/\*\*[^*\n]+\*\*|\*\*|^#{1,4}\s|`[^`\n]+`|__\w/gm) ?? [];
+  // "**bold**", "## Heading", "`code`", "__bold__" (not "____" fill-in lines)
+  const md = fullText.match(/\*\*[^*\n]+\*\*|^#{1,4} [A-Za-z]|`[^`\n]+`|__[A-Za-z][^_\n]{0,40}__/gm) ?? [];
   if (md.length) add(`Leftover markdown: ${md.slice(0, 3).map((m) => `'${m}'`).join(", ")}`, 2);
   const placeholders = fullText.match(/\[[A-Z][^\]\n]{2,30}\]|\bX{2,}%|\blorem ipsum\b/gi) ?? [];
   if (placeholders.length) {
     add(`Placeholder text: ${placeholders.slice(0, 4).map((p) => `'${p.split(/\s+/).join(" ")}'`).join(", ")}`, 2);
   }
-  if (/\b(as an ai|language model|certainly!|here is (?:a|an|your) (?:revised|updated|improved))/i.test(fullText)) {
+  // not just "language model", which is a normal phrase on an ML researcher's CV
+  if (/\b(as an ai\b|as a language model|certainly!|here is (?:a|an|your) (?:revised|updated|improved))/i.test(fullText)) {
     add("Chatbot wording ('As an AI', 'Here is your revised…')", 2);
   }
   const fakeMatches = [...new Set(PLACEHOLDER_CONTACT_RES.flatMap((re) => fullText.match(re) ?? []))];
@@ -726,7 +967,7 @@ const IMPORTANCE: Record<string, number> = {
 const FAIL_CAPS = [100, 75, 60, 45]; // highest possible score with 0, 1, 2, 3+ issues
 const NOT_A_CV_CAP = 25;
 
-function finish(checks: Check[], pages: number, wordCount: number): CheckResult {
+function finish(checks: Check[], pages: number, wordCount: number, text: string): CheckResult {
   const scored = checks.filter((c) => c.status !== "info");
   const weight = (c: Check) => IMPORTANCE[c.id] ?? 1;
   const total = scored.reduce((a, c) => a + weight(c), 0);
@@ -740,5 +981,5 @@ function finish(checks: Check[], pages: number, wordCount: number): CheckResult 
   checks.sort((a, b) => order[a.status] - order[b.status]);
   const counts: Partial<Record<Status, number>> = {};
   for (const c of checks) counts[c.status] = (counts[c.status] ?? 0) + 1;
-  return { score, pages, words: wordCount, counts, checks };
+  return { score, pages, words: wordCount, text, counts, checks };
 }

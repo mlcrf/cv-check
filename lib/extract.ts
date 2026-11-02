@@ -1,4 +1,5 @@
 // Server-side PDF reading with pdf.js: text lines with font/size/position, links and image count.
+import { fontKind } from "./fonts";
 import type { ExtractedPdf, Line, Span } from "./types";
 
 type PdfJs = typeof import("pdfjs-dist/legacy/build/pdf.mjs");
@@ -8,6 +9,7 @@ type TextItem = Extract<TextContent["items"][number], { str: string }>;
 
 interface FontInfo {
   name: string;
+  kind: ReturnType<typeof fontKind>;
   bold: boolean;
   ascent: number;
   descent: number;
@@ -68,6 +70,7 @@ export async function extractPdf(data: Uint8Array): Promise<ExtractedPdf> {
         }
         fonts.set(id, {
           name,
+          kind: fontKind(name),
           bold: bold || BOLD_NAME.test(name),
           ascent: style.ascent || 0.8,
           descent: Math.abs(style.descent || -0.2),
@@ -89,6 +92,16 @@ export async function extractPdf(data: Uint8Array): Promise<ExtractedPdf> {
   return result;
 }
 
+/**
+ * pdf.js turns character-spaced text (justified Word lines, letter-spaced headings) into
+ * "i n B u s i n e s s A d m i n i s t r a t i o n". Join runs of 3+ single letters back together,
+ * then restore word breaks at lower→Upper changes: "in Business Administration".
+ */
+export function collapseLetterSpacing(text: string) {
+  return text.replace(/(?<![\p{L}\p{N}])(?:\p{L} ){2,}\p{L}(?![\p{L}\p{N}])/gu, (run) =>
+    run.replace(/ /g, "").replace(/(\p{Ll})(\p{Lu})/gu, "$1 $2"));
+}
+
 /** Join pdf.js text items into visual lines (same baseline, left-to-right, no large gaps). */
 function groupLines(
   items: TextItem[],
@@ -107,7 +120,7 @@ function groupLines(
       const main = spans.reduce((a, b) => (b.text.trim().length > a.text.trim().length ? b : a));
       lines.push({
         page,
-        text: cur.text.trim(),
+        text: collapseLetterSpacing(cur.text.trim()),
         bbox: [cur.x0, cur.y0, cur.x1, cur.y1],
         size: Math.round(main.size * 10) / 10,
         font: main.font,
@@ -119,13 +132,19 @@ function groupLines(
   };
 
   for (const item of items) {
-    const font = fonts.get(item.fontName) ?? { name: "Unknown", bold: false, ascent: 0.8, descent: 0.2 };
+    const font = fonts.get(item.fontName) ?? { name: "Unknown", kind: "text", bold: false, ascent: 0.8, descent: 0.2 };
     const tx = pdfjs.Util.transform(viewportTransform, item.transform);
     const size = Math.hypot(item.transform[2], item.transform[3]);
     const x = tx[4];
     const base = tx[5];
 
-    if (!item.str) {
+    let str = item.str;
+    if (!str) {
+      if (item.hasEOL) breakNext = true;
+      continue;
+    }
+    // Icon fonts (phone/envelope/GitHub icons) come out as emoji or glyph names like "HOUSE-CHIMNEY"
+    if (font.kind === "icon") {
       if (item.hasEOL) breakNext = true;
       continue;
     }
@@ -140,15 +159,23 @@ function groupLines(
     }
     breakNext = item.hasEOL;
 
+    // A Symbol/Wingdings glyph starting a line is a bullet; Wingdings ones often map to
+    // private-use characters, so normalise those to "•"
+    const startsLine = !cur || !cur.text.trim();
+    if (font.kind === "bullet" && startsLine && str.trim().length <= 2 && !/[•●▪■◦○‣∙·–\-*➢►✓]/.test(str)) {
+      str = "•";
+    }
+
     const y0 = base - font.ascent * size;
     const y1 = base + font.descent * size;
-    const span: Span = { text: item.str, size, font: font.name, bold: font.bold };
+    const span: Span = { text: str, size, font: font.name, bold: font.bold, kind: font.kind };
     if (!cur) {
-      cur = { spans: [span], text: item.str, x0: x, x1: x + item.width, y0, y1, base };
+      cur = { spans: [span], text: str, x0: x, x1: x + item.width, y0, y1, base };
     } else {
-      // pdf.js often positions words without a space character between them
-      const needsSpace = x - cur.x1 > 0.15 * size && !/\s$/.test(cur.text) && !/^\s/.test(item.str);
-      cur.text += (needsSpace ? " " : "") + item.str;
+      // pdf.js usually includes spaces itself; add one only for a real word gap. Letter-spaced or
+      // justified text has gaps of ~0.1–0.25 em between letters ("B u s i n e s s" otherwise).
+      const needsSpace = x - cur.x1 > 0.3 * size && !/\s$/.test(cur.text) && !/^\s/.test(str);
+      cur.text += (needsSpace ? " " : "") + str;
       cur.spans.push(span);
       cur.x1 = Math.max(cur.x1, x + item.width);
       cur.y0 = Math.min(cur.y0, y0);

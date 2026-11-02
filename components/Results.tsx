@@ -1,7 +1,9 @@
 "use client";
 
 import { useState } from "react";
+import { allFixesPrompt, fixable, promptFor } from "@/lib/prompts";
 import type { Check, CheckResult, Status } from "@/lib/types";
+import CopyButton from "./CopyButton";
 import { ChevronIcon, ExpandIcon } from "./icons";
 import Lightbox from "./Lightbox";
 
@@ -15,12 +17,16 @@ function band(score: number) {
   return { verdict: "Needs work", ring: "var(--red-600)", text: "var(--red-700)" };
 }
 
-function CheckCard({ check }: { check: Check }) {
+function CheckCard({ check, result }: { check: Check; result: CheckResult }) {
   return (
     <div className={`check ${check.status}`}>
       <div className="check-head">
         <span className={`badge ${check.status}`}>{LABELS[check.status]}</span>
         <h3>{check.title}</h3>
+        {check.fix && check.status !== "pass" && (
+          <CopyButton label="Copy prompt" getText={() => promptFor(check, result)}
+            title="Copy a prompt to paste into an AI assistant to fix this" />
+        )}
       </div>
       <p>{check.message}</p>
       {check.details.length > 0 && (
@@ -49,6 +55,7 @@ export default function Results({ result, fileName, previews, onCheckAnother }: 
   const attention = checks.filter((c) => c.status !== "pass");
   const passed = checks.filter((c) => c.status === "pass");
   const passLabel = `${passed.length} passed check${passed.length === 1 ? "" : "s"}`;
+  const fixCount = fixable(result).length;
 
   return (
     <div className="results">
@@ -92,8 +99,14 @@ export default function Results({ result, fileName, previews, onCheckAnother }: 
       </aside>
 
       <div className="checks">
+        {fixCount > 0 && (
+          <div className="fix-bar">
+            <p>Fix with AI: copy a prompt from any result and paste it into ChatGPT, Claude or similar. Every prompt tells the AI to keep your facts and not invent any.</p>
+            <CopyButton className="btn btn-secondary" label={`Copy all fixes (${fixCount})`} getText={() => allFixesPrompt(result)} />
+          </div>
+        )}
         {attention.length
-          ? attention.map((c) => <CheckCard key={c.id} check={c} />)
+          ? attention.map((c) => <CheckCard key={c.id} check={c} result={result} />)
           : <div className="all-clear">Nothing to fix — every check passed.</div>}
         {passed.length > 0 && (
           <>
@@ -103,7 +116,7 @@ export default function Results({ result, fileName, previews, onCheckAnother }: 
             </button>
             {showPassed && (
               <div className="passed">
-                {passed.map((c) => <CheckCard key={c.id} check={c} />)}
+                {passed.map((c) => <CheckCard key={c.id} check={c} result={result} />)}
               </div>
             )}
           </>

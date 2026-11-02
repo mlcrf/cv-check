@@ -107,6 +107,21 @@ header p { margin: .5rem 0 0; color: var(--slate-500); font-size: .9375rem; }
 .check.info { background: var(--blue-50); border-color: var(--blue-200); }
 .check-head { display: flex; align-items: center; gap: .5rem; }
 .check h3 { margin: 0; font-size: .875rem; font-weight: 600; }
+
+/* Copy-a-prompt buttons for fixing results with an AI assistant */
+.copy-btn { margin-left: auto; display: inline-flex; align-items: center; gap: .3rem; flex-shrink: 0;
+            padding: .1875rem .5rem; border-radius: 999px; border: 1px solid rgba(15, 23, 43, .12);
+            background: rgba(255, 255, 255, .75); color: var(--slate-700); font: inherit; font-size: .6875rem;
+            font-weight: 600; cursor: pointer; transition: background-color .15s, border-color .15s; }
+.copy-btn:hover { background: #fff; border-color: var(--slate-400); }
+.copy-btn:focus-visible { outline: 2px solid var(--purple-700); outline-offset: 2px; }
+.copy-btn.copied { color: var(--green-700); border-color: var(--green-200); }
+.fix-bar { display: flex; align-items: center; gap: .75rem; padding: .625rem .875rem; border-radius: var(--radius-lg);
+           border: 1px dashed var(--slate-300); background: var(--slate-50); }
+.fix-bar p { margin: 0; font-size: .75rem; color: var(--slate-600); }
+.fix-bar .btn { flex-shrink: 0; height: 2.25rem; font-size: .8125rem; }
+.btn.copied { color: var(--green-700); border-color: var(--green-200); }
+@media (max-width: 639px) { .fix-bar { flex-direction: column; align-items: stretch; } }
 .badge { font-size: .625rem; font-weight: 700; text-transform: uppercase; letter-spacing: .03em;
          padding: .0625rem .4375rem; border-radius: 999px; }
 .badge.pass { background: var(--green-100); color: var(--green-700); }
