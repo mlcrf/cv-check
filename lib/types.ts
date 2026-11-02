@@ -12,16 +12,12 @@ export interface Check {
 
 export interface Fix {
   task: string;
-  /** The task needs the whole CV for context (e.g. "which lines belong under a Skills heading?") */
-  needsCv?: boolean;
 }
 
 export interface CheckResult {
   score: number;
   pages: number;
   words: number;
-  /** The CV's text as extracted, used as context in fix prompts */
-  text: string;
   counts: Partial<Record<Status, number>>;
   checks: Check[];
 }

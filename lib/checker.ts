@@ -255,8 +255,8 @@ export function analyse(pdf: ExtractedPdf): CheckResult {
     checks.push(check("text", "Readable text", "fail",
       "No selectable text — the CV is an image (or its text was turned into shapes), so ATS can't read it.",
       ["Export straight to PDF from Word, Google Docs or LaTeX."]));
-    checks[0].fix = { task: "My CV PDF has no selectable text (it's an image, or the text was converted to shapes), so applicant tracking systems can't read it. Tell me step by step how to export a text-based PDF from the editor I made it with — ask me whether it's Word, Google Docs, Canva or LaTeX first." };
-    return finish(checks, n, allWords.length, fullText);
+    checks[0].fix = { task: "My CV PDF has no selectable text, so ATS software can't read it. How do I export a text-based PDF? (Ask whether I use Word, Google Docs, Canva or LaTeX.)" };
+    return finish(checks, n, allWords.length);
   }
   checks.push(check("text", "Readable text", "pass", "ATS software can read your CV."));
 
@@ -681,7 +681,7 @@ export function analyse(pdf: ExtractedPdf): CheckResult {
     missingSections, unsortedLists, signals: signalText, unquantified: unquantifiedTexts,
     personal, spaceIssues,
   });
-  return finish(checks, n, allWords.length, fullText);
+  return finish(checks, n, allWords.length);
 }
 
 /** Does a bullet contain a figure (ignoring dates and years)? */
@@ -713,119 +713,112 @@ interface FixContext {
   spaceIssues: string[];
 }
 
-const MAX_QUOTED = 10;
+const MAX_QUOTED = 6;
+// The CV is attached, so the opening words are enough for the assistant to find each line
+const opening = (text: string, maxWords = 10) => {
+  const w = text.split(/\s+/).filter(Boolean);
+  return w.length > maxWords ? w.slice(0, maxWords).join(" ") + "…" : text;
+};
 const quoteList = (xs: string[]) =>
-  xs.slice(0, MAX_QUOTED).map((x) => `- "${x}"`).join("\n") + (xs.length > MAX_QUOTED ? `\n- …and ${xs.length - MAX_QUOTED} more like these` : "");
-const KEEP_FACTS = "Keep every number and fact, and don't invent any.";
-// Layout problems: the assistant can't see the file, so ask for instructions for the user's editor
+  xs.slice(0, MAX_QUOTED).map((x) => `- "${opening(x)}"`).join("\n") + (xs.length > MAX_QUOTED ? `\n- …and the others like these in my CV` : "");
+// Layout problems: the assistant can't change the file, so ask for instructions for the user's editor
 const EDITOR_FIX_IDS = ["pagesize", "margins", "fonts", "bodysize", "sizes", "headingstyle", "spacing", "columns", "images"];
+const ASK_EDITOR = "Tell me how to fix it in my editor (ask whether I use Word, Google Docs, Canva or LaTeX).";
 
-/** Attach to each result that isn't a pass the task to give an AI assistant (rules are added in lib/prompts.ts). */
+/** Attach to each result that isn't a pass the task to give an AI assistant (shared rules are in lib/prompts.ts). */
 function attachFixes(checks: Check[], ctx: FixContext) {
   const fixes = new Map<string, Fix>();
   const status = (id: string) => checks.find((c) => c.id === id)?.status;
+  const set = (id: string, task: string) => fixes.set(id, { task });
 
   for (const c of checks) {
-    if (EDITOR_FIX_IDS.includes(c.id)) {
-      const details = c.details.length ? ` (${c.details.join("; ")})` : "";
-      fixes.set(c.id, { task: `${c.message}${details} Tell me step by step how to fix this in the editor I made my CV with — ask me first whether it's Word, Google Docs, Canva or LaTeX.` });
-    }
+    if (EDITOR_FIX_IDS.includes(c.id)) set(c.id, `${c.message} ${ASK_EDITOR}`);
   }
 
   if (status("pages") !== "pass") {
-    const target = ctx.pages > 2 ? "2 pages" : "1 page";
-    fixes.set("pages", { needsCv: true, task: `My CV is ${ctx.pages} pages; most roles expect 1–2. Suggest what to cut or shorten to get it to ${target} (older or less relevant roles, repeated points, long descriptions). Quote each line you'd cut or shorten and give the shortened version. Don't add anything.` });
+    set("pages", `My CV is ${ctx.pages} pages. Show me what to cut or shorten to fit ${ctx.pages > 2 ? "2 pages" : "1 page"}.`);
   }
   if (status("wordcount") === "warn") {
-    fixes.set("wordcount", ctx.wordCount < 200
-      ? { needsCv: true, task: `My CV is only ${ctx.wordCount} words. Don't write content for me: ask me up to 8 specific questions about my achievements, projects, responsibilities and results so I can add real detail.` }
-      : { needsCv: true, task: `My CV is dense (~${Math.round(ctx.perPage)} words per page). Quote the lines to trim and give tighter versions. ${KEEP_FACTS}` });
+    set("wordcount", ctx.wordCount < 200
+      ? "My CV is too short. Ask me up to 8 questions about my achievements and results so I can add real detail."
+      : "My CV is too dense. Show me which lines to trim and give tighter versions.");
   }
 
   if (ctx.missingContact.length) {
-    fixes.set("contact", { task: `My CV is missing my ${ctx.missingContact.join(" and ")}${ctx.hasLinkedin ? "" : " (and has no LinkedIn link)"}. Don't make up contact details: give me a clean one-line contact header (e.g. City · email · phone · linkedin.com/in/name) with [placeholders] for what's missing.` });
+    set("contact", `My CV is missing my ${ctx.missingContact.join(" and ")}. Give me a one-line contact header with [placeholders] for what's missing.`);
   } else if (!ctx.hasLinkedin) {
-    fixes.set("contact", { task: "My CV has no LinkedIn link. Show me how to add a short one (linkedin.com/in/firstname-lastname) to my contact line, with a [placeholder] for my profile name." });
+    set("contact", "Show me how to add a short LinkedIn link (linkedin.com/in/[name]) to my contact line.");
   }
   const linkedin = checks.find((c) => c.id === "linkedin");
-  if (linkedin) {
-    fixes.set("linkedin", { task: `My LinkedIn link has these problems: ${linkedin.details.join("; ")}. Tell me how to set a custom URL like linkedin.com/in/firstname-lastname in LinkedIn's settings, and how to write it on my CV (no https://www.).` });
-  }
-  fixes.set("email", { needsCv: true, task: "My email address doesn't look professional. Suggest 3 professional formats based on my name (e.g. firstname.lastname@gmail.com) — I'll create the address myself." });
+  if (linkedin) set("linkedin", `My LinkedIn link: ${linkedin.details.join("; ")}. How do I set a custom URL like linkedin.com/in/firstname-lastname?`);
+  set("email", "Suggest 3 professional email address formats based on my name.");
 
   if (ctx.missingSections.length) {
-    const names = ctx.missingSections.map(titleCase).join(" and ");
-    fixes.set("sections", { needsCv: true, task: `My CV has no ${names} section heading. Using only what's already in my CV, tell me which existing lines belong under ${ctx.missingSections.length > 1 ? "them" : "it"} and what standard heading name to use. If I simply don't have that content, say so and ask me questions instead — don't invent any.` });
+    set("sections", `My CV has no ${ctx.missingSections.map(titleCase).join(" or ")} heading. Which of my existing lines belong under one, and what should it be called? If I don't have that content, ask me questions instead.`);
   }
 
   if (status("dates") === "warn" && ctx.usedFormats.length > 1) {
     const [target] = [...ctx.usedFormats].sort((a, b) => b[1].length - a[1].length)[0];
-    const all = [...new Set(ctx.usedFormats.flatMap(([, v]) => v))];
-    fixes.set("dates", { task: `My CV mixes date formats (${ctx.usedFormats.map(([k]) => k).join(", ")}). Convert every date below to the ${target} format and reply with each one converted:\n${quoteList(all)}` });
+    set("dates", `Convert every date in my CV to the ${target} format.`);
   } else if (status("dates") === "warn") {
-    fixes.set("dates", { needsCv: true, task: "My CV has no dates. Ask me for the start and end month and year of each role and degree — don't guess them — then show me where to put them." });
+    set("dates", "My CV has no dates. Ask me for the start and end month/year of each role and degree.");
   } else if (status("dates") === "info") {
-    fixes.set("dates", { needsCv: true, task: "My CV only shows years. Ask me for the month of each start and end date so I can use the 'Mon YYYY – Mon YYYY' format — don't guess any months." });
+    set("dates", "My CV only shows years. Ask me for the start and end months so I can use 'Mon YYYY'.");
   }
 
   if (status("bullets") === "warn" || status("bullets") === "info") {
     const noBullets = checks.find((c) => c.id === "bullets")!.message.startsWith("No");
-    fixes.set("bullets", noBullets
-      ? { needsCv: true, task: `My CV has no bullet points. Rewrite the description under each role as 2–4 bullet points, each starting with an action verb. ${KEEP_FACTS}` }
-      : { task: "My CV mixes bullet symbols. Tell me how to make them all the same in the editor I made my CV with — ask me first whether it's Word, Google Docs, Canva or LaTeX." });
+    set("bullets", noBullets
+      ? "Rewrite the description under each role in my CV as 2–4 bullet points starting with action verbs."
+      : `My CV mixes bullet symbols. ${ASK_EDITOR}`);
   }
   if (status("punct") === "warn") {
     const withStop = ctx.bulletTexts.filter((t) => t.trimEnd().endsWith("."));
     const addStops = withStop.length >= ctx.bulletTexts.length / 2;
-    const targets = (addStops ? ctx.bulletTexts.filter((t) => !t.trimEnd().endsWith(".")) : withStop).map(stripBullet);
-    fixes.set("punct", { task: `Make my bullet points consistent: ${addStops ? "add a full stop at the end of each of these" : "remove the full stop at the end of each of these"}, changing nothing else:\n${quoteList(targets)}` });
+    set("punct", `Make my bullet points consistent: ${addStops ? "end every one with a full stop" : "remove the full stop at the end of every one"}. Change nothing else.`);
   }
 
   const long = ctx.paras.filter((p) => p.words > (p.bullet ? 40 : 60));
   if (long.length === 1) {
     const p = long[0];
-    fixes.set("paragraphs", { task: `Rewrite this ${p.words}-word ${p.bullet ? "bullet point" : "paragraph"} in under ${p.bullet ? 40 : 60} words. ${KEEP_FACTS}\n"${stripBullet(p.text)}"` });
+    set("paragraphs", `Rewrite this ${p.words}-word ${p.bullet ? "bullet" : "paragraph"} in under ${p.bullet ? 40 : 60} words:\n"${opening(stripBullet(p.text))}"`);
   } else if (long.length) {
-    const items = long.slice(0, MAX_QUOTED).map((p) => `- "${stripBullet(p.text)}" (${p.words} words)`).join("\n");
-    fixes.set("paragraphs", { task: `Rewrite each of these so bullet points are under 40 words and paragraphs under 60. ${KEEP_FACTS}\n${items}` });
+    set("paragraphs", `Shorten these to under 40 words per bullet (60 per paragraph):\n${quoteList(long.map((p) => stripBullet(p.text)))}`);
   }
 
   if (status("space") === "warn") {
     const wordCount = (line: string) => line.split(/\s+/).filter(Boolean).length; // as the check counts them
     const orphans = ctx.paras.filter((p) => p.lines.length >= 2 && wordCount(p.lines[p.lines.length - 1]) <= 2
       && wordCount(p.lines[p.lines.length - 2]) >= 6);
-    const emptyAreas = ctx.spaceIssues.filter((x) => /empty/.test(x));
+    const empty = ctx.spaceIssues.some((x) => /empty/.test(x));
     const parts: string[] = [];
-    if (orphans.length) parts.push(`Each of these ends with a line holding only 1–2 words. Trim each by a few words so it takes one line less. ${KEEP_FACTS}\n${quoteList(orphans.map((p) => stripBullet(p.text)))}`);
-    if (emptyAreas.length) parts.push(`My CV has empty space (${emptyAreas.join("; ")}). Don't write content for me: ask me up to 5 questions about achievements, projects or skills I may have left out, so I can fill it with real information.`);
-    if (!parts.length) parts.push(`My CV wastes space: ${ctx.spaceIssues.join("; ")}. Tell me how to tighten it in the editor I made my CV with — ask me first whether it's Word, Google Docs, Canva or LaTeX.`);
-    fixes.set("space", { needsCv: emptyAreas.length > 0, task: parts.join("\n\nThen: ") });
+    if (orphans.length) parts.push(`Trim each of these by a few words so its last line isn't left with 1–2 words:\n${quoteList(orphans.map((p) => stripBullet(p.text)))}`);
+    if (empty) parts.push("My CV has empty space. Ask me up to 5 questions about achievements or projects I could add.");
+    if (!parts.length) parts.push(`My CV wastes space (${ctx.spaceIssues.join("; ")}). ${ASK_EDITOR}`);
+    set("space", parts.join("\n\n"));
   }
 
   if (ctx.unsortedLists.length) {
-    fixes.set("alpha", { task: `Put the lines of these sections in alphabetical order (by the label at the start of each line), changing nothing else. Current order → wanted order:\n${ctx.unsortedLists.map((l) => `- ${l}`).join("\n")}` });
+    set("alpha", `Reorder these lines alphabetically, changing nothing else:\n${ctx.unsortedLists.map((l) => `- ${l}`).join("\n")}`);
   }
 
   if ((status("metrics") === "warn" || status("metrics") === "info") && ctx.unquantified.length) {
-    fixes.set("metrics", { task: `These bullet points have no numbers. Rewrite each to show scale or impact (how many, how often, how much, % change, time or money saved). Don't make up numbers: put a placeholder like [X%] or [number] wherever a figure would help, and ask me for the real values.\n${quoteList(ctx.unquantified)}` });
+    set("metrics", `Add measurable impact to these bullets. Don't make up numbers: use [placeholders] and ask me for the real values.\n${quoteList(ctx.unquantified)}`);
   }
 
   if (status("pronouns") === "warn") {
     const withPronouns = ctx.paras.filter((p) => (p.text.match(PRONOUN_RE) ?? []).length > 0);
-    fixes.set("pronouns", { task: `Rewrite these without "I", "me" or "my", starting each with an action verb. ${KEEP_FACTS}\n${quoteList(withPronouns.map((p) => stripBullet(p.text)))}` });
+    set("pronouns", `Rewrite these without "I", "me" or "my", starting with action verbs:\n${quoteList(withPronouns.map((p) => stripBullet(p.text)))}`);
   }
-  if (ctx.personal.length) {
-    fixes.set("personal", { needsCv: true, task: `Tell me exactly which lines to delete to remove these personal details from my CV: ${ctx.personal.join(", ")}. Change nothing else.` });
-  }
+  if (ctx.personal.length) set("personal", `Which lines should I delete to remove: ${ctx.personal.join(", ")}?`);
 
   if (status("ai") === "warn" || status("ai") === "info") {
     const aiLike = ctx.paras.filter((p) => (p.text.match(AI_PHRASE_RE) ?? []).length > 0 || /—/.test(p.text)
       || OUTCOME_CLAUSE_RE.test(p.text) || /\b\d[\d,.]*\+(?=[\s),.;]|$)/.test(p.text));
-    const fakeContact = ctx.signals.find((x) => x.startsWith("Placeholder contact"));
-    const parts = [`My CV reads as AI-generated (${ctx.signals.join("; ")}).`];
-    if (aiLike.length) parts.push(`Rewrite these lines in plain, specific language in my own voice: no buzzwords (e.g. 'spearheaded', 'leveraged', 'robust'), commas or full stops instead of em-dashes, and varied sentence structure. ${KEEP_FACTS}\n${quoteList(aiLike.map((p) => stripBullet(p.text)))}`);
-    if (fakeContact) parts.push("It also contains placeholder contact details. Remind me to replace them with my real ones — don't make any up.");
-    fixes.set("ai", { needsCv: !aiLike.length, task: parts.join("\n") + (aiLike.length ? "" : " Point out the lines that sound most AI-written and suggest plainer wording for each.") });
+    const fakeContact = ctx.signals.some((x) => x.startsWith("Placeholder contact"));
+    const humanize = "Humanize my CV so it doesn't read as AI-written: no em-dashes (—) or '·' separators, no buzzwords (spearheaded, leveraged, robust, seamless…), no 'N+' figures (write 'over 300', not '300+'), no 'did X, resulting in Y' pattern, and vary sentence length and structure.";
+    const lines = aiLike.length ? ` Start with these:\n${quoteList(aiLike.map((p) => stripBullet(p.text)))}` : "";
+    set("ai", humanize + lines + (fakeContact ? "\nAlso remind me to replace the placeholder contact details." : ""));
   }
 
   for (const c of checks) {
@@ -967,7 +960,7 @@ const IMPORTANCE: Record<string, number> = {
 const FAIL_CAPS = [100, 75, 60, 45]; // highest possible score with 0, 1, 2, 3+ issues
 const NOT_A_CV_CAP = 25;
 
-function finish(checks: Check[], pages: number, wordCount: number, text: string): CheckResult {
+function finish(checks: Check[], pages: number, wordCount: number): CheckResult {
   const scored = checks.filter((c) => c.status !== "info");
   const weight = (c: Check) => IMPORTANCE[c.id] ?? 1;
   const total = scored.reduce((a, c) => a + weight(c), 0);
@@ -981,5 +974,5 @@ function finish(checks: Check[], pages: number, wordCount: number, text: string)
   checks.sort((a, b) => order[a.status] - order[b.status]);
   const counts: Partial<Record<Status, number>> = {};
   for (const c of checks) counts[c.status] = (counts[c.status] ?? 0) + 1;
-  return { score, pages, words: wordCount, text, counts, checks };
+  return { score, pages, words: wordCount, counts, checks };
 }

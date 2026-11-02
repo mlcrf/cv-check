@@ -17,14 +17,14 @@ function band(score: number) {
   return { verdict: "Needs work", ring: "var(--red-600)", text: "var(--red-700)" };
 }
 
-function CheckCard({ check, result }: { check: Check; result: CheckResult }) {
+function CheckCard({ check }: { check: Check }) {
   return (
     <div className={`check ${check.status}`}>
       <div className="check-head">
         <span className={`badge ${check.status}`}>{LABELS[check.status]}</span>
         <h3>{check.title}</h3>
         {check.fix && check.status !== "pass" && (
-          <CopyButton label="Copy prompt" getText={() => promptFor(check, result)}
+          <CopyButton label="Copy prompt" getText={() => promptFor(check)}
             title="Copy a prompt to paste into an AI assistant to fix this" />
         )}
       </div>
@@ -101,12 +101,12 @@ export default function Results({ result, fileName, previews, onCheckAnother }: 
       <div className="checks">
         {fixCount > 0 && (
           <div className="fix-bar">
-            <p>Fix with AI: copy a prompt from any result and paste it into ChatGPT, Claude or similar. Every prompt tells the AI to keep your facts and not invent any.</p>
+            <p>Fix with AI: copy a prompt from any result and paste it into ChatGPT, Claude or similar, with your CV attached.</p>
             <CopyButton className="btn btn-secondary" label={`Copy all fixes (${fixCount})`} getText={() => allFixesPrompt(result)} />
           </div>
         )}
         {attention.length
-          ? attention.map((c) => <CheckCard key={c.id} check={c} result={result} />)
+          ? attention.map((c) => <CheckCard key={c.id} check={c} />)
           : <div className="all-clear">Nothing to fix — every check passed.</div>}
         {passed.length > 0 && (
           <>
@@ -116,7 +116,7 @@ export default function Results({ result, fileName, previews, onCheckAnother }: 
             </button>
             {showPassed && (
               <div className="passed">
-                {passed.map((c) => <CheckCard key={c.id} check={c} result={result} />)}
+                {passed.map((c) => <CheckCard key={c.id} check={c} />)}
               </div>
             )}
           </>
