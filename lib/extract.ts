@@ -16,7 +16,14 @@ interface FontInfo {
 const BOLD_NAME = /bold|black|heavy|semibold|demi/i;
 
 let pdfjsPromise: Promise<PdfJs> | null = null;
-const loadPdfJs = () => (pdfjsPromise ??= import("pdfjs-dist/legacy/build/pdf.mjs"));
+const loadPdfJs = () =>
+  (pdfjsPromise ??= (async () => {
+    // pdf.js normally imports its worker from a path computed at runtime, which Vercel's file tracing
+    // can't see, so the worker isn't deployed ("Setting up fake worker failed"). Importing it here
+    // gets it deployed, and pdf.js uses globalThis.pdfjsWorker instead of loading it from disk.
+    (globalThis as { pdfjsWorker?: unknown }).pdfjsWorker = await import("pdfjs-dist/legacy/build/pdf.worker.mjs");
+    return import("pdfjs-dist/legacy/build/pdf.mjs");
+  })());
 
 export async function extractPdf(data: Uint8Array): Promise<ExtractedPdf> {
   const pdfjs = await loadPdfJs();
