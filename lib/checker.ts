@@ -724,15 +724,36 @@ const quoteList = (xs: string[]) =>
 // Layout problems: the assistant can't change the file, so ask for instructions for the user's editor
 const EDITOR_FIX_IDS = ["pagesize", "margins", "fonts", "bodysize", "sizes", "headingstyle", "spacing", "columns", "images"];
 const ASK_EDITOR = "Tell me how to fix it in my editor (ask whether I use Word, Google Docs, Canva or LaTeX).";
+// What to do about each AI-style sign (matched against the sign's text from aiSignals)
+const AI_FIXES: [RegExp, string][] = [
+  [/^AI-typical words/, "replace these with plain, specific words"],
+  [/^Leftover markdown/, "remove these formatting symbols"],
+  [/^Placeholder text/, "replace with my real content (ask me)"],
+  [/^Chatbot wording/, "delete it"],
+  [/^Placeholder contact details/, "replace with my real details (ask me for them)"],
+  [/emoji/, "remove them"],
+  [/em-dashes/, "replace them with commas, colons or full stops"],
+  [/'·' separators/, "replace them with commas or '|'"],
+  [/'from X to Y'/, "phrase some of these differently"],
+  [/bold 'Label:'/, "drop the labels and start each bullet with its action verb"],
+  [/bullets use 'did X/, "vary how these sentences are built"],
+  [/^Bullets are all/, "vary the bullet lengths"],
+  [/lists of three/, "cut some lists to one or two items"],
+  [/Not just X, but Y/, "say it directly instead"],
+];
 
 /** Attach to each result that isn't a pass the task to give an AI assistant (shared rules are in lib/prompts.ts). */
 function attachFixes(checks: Check[], ctx: FixContext) {
   const fixes = new Map<string, Fix>();
   const status = (id: string) => checks.find((c) => c.id === id)?.status;
   const set = (id: string, task: string) => fixes.set(id, { task });
+  const get = (id: string) => checks.find((c) => c.id === id);
+  // the specific findings first, e.g. "Page 1: top margin is only 6 mm; Page 2: …. "
+  const findings = (c: Check, max = 4) => (c.details.length ? `${c.details.slice(0, max).join("; ")}. ` : "");
+  const headline = (c: Check) => c.message.split(" — ")[0]; // "3 bullet styles (• – ▪)" without the advice
 
   for (const c of checks) {
-    if (EDITOR_FIX_IDS.includes(c.id)) set(c.id, `${c.message} ${ASK_EDITOR}`);
+    if (EDITOR_FIX_IDS.includes(c.id)) set(c.id, `${findings(c)}${c.message} ${ASK_EDITOR}`);
   }
 
   if (status("pages") !== "pass") {
@@ -740,8 +761,8 @@ function attachFixes(checks: Check[], ctx: FixContext) {
   }
   if (status("wordcount") === "warn") {
     set("wordcount", ctx.wordCount < 200
-      ? "My CV is too short. Ask me up to 8 questions about my achievements and results so I can add real detail."
-      : "My CV is too dense. Show me which lines to trim and give tighter versions.");
+      ? `My CV is only ${ctx.wordCount} words. Ask me up to 8 questions about my achievements and results so I can add real detail.`
+      : `My CV has ~${Math.round(ctx.perPage)} words per page, which is too dense. Show me which lines to trim and give tighter versions.`);
   }
 
   if (ctx.missingContact.length) {
@@ -758,8 +779,9 @@ function attachFixes(checks: Check[], ctx: FixContext) {
   }
 
   if (status("dates") === "warn" && ctx.usedFormats.length > 1) {
-    const [target] = [...ctx.usedFormats].sort((a, b) => b[1].length - a[1].length)[0];
-    set("dates", `Convert every date in my CV to the ${target} format.`);
+    const [target, targetHits] = [...ctx.usedFormats].sort((a, b) => b[1].length - a[1].length)[0];
+    const mixed = ctx.usedFormats.map(([k, v]) => `'${v[0]}' (${k.split(" (")[0]}, ${v.length}×)`).join(", ");
+    set("dates", `My CV mixes date formats: ${mixed}. Convert every date to the ${target.split(" (")[0]} format, like '${targetHits[0]}'.`);
   } else if (status("dates") === "warn") {
     set("dates", "My CV has no dates. Ask me for the start and end month/year of each role and degree.");
   } else if (status("dates") === "info") {
@@ -767,15 +789,15 @@ function attachFixes(checks: Check[], ctx: FixContext) {
   }
 
   if (status("bullets") === "warn" || status("bullets") === "info") {
-    const noBullets = checks.find((c) => c.id === "bullets")!.message.startsWith("No");
-    set("bullets", noBullets
-      ? "Rewrite the description under each role in my CV as 2–4 bullet points starting with action verbs."
-      : `My CV mixes bullet symbols. ${ASK_EDITOR}`);
+    const bullets = get("bullets")!;
+    set("bullets", bullets.message.startsWith("No")
+      ? "My CV has no bullet points. Rewrite the description under each role as 2–4 bullet points starting with action verbs."
+      : `My CV uses ${headline(bullets).replace(/^\d+ |^Two /, (m) => m.toLowerCase())}. Make them all the same. ${ASK_EDITOR}`);
   }
   if (status("punct") === "warn") {
     const withStop = ctx.bulletTexts.filter((t) => t.trimEnd().endsWith("."));
     const addStops = withStop.length >= ctx.bulletTexts.length / 2;
-    set("punct", `Make my bullet points consistent: ${addStops ? "end every one with a full stop" : "remove the full stop at the end of every one"}. Change nothing else.`);
+    set("punct", `${headline(get("punct")!)}. Make them consistent: ${addStops ? "end every bullet with a full stop" : "remove the full stop at the end of every bullet"}. Change nothing else.`);
   }
 
   const long = ctx.paras.filter((p) => p.words > (p.bullet ? 40 : 60));
@@ -783,23 +805,31 @@ function attachFixes(checks: Check[], ctx: FixContext) {
     const p = long[0];
     set("paragraphs", `Rewrite this ${p.words}-word ${p.bullet ? "bullet" : "paragraph"} in under ${p.bullet ? 40 : 60} words:\n"${opening(stripBullet(p.text))}"`);
   } else if (long.length) {
-    set("paragraphs", `Shorten these to under 40 words per bullet (60 per paragraph):\n${quoteList(long.map((p) => stripBullet(p.text)))}`);
+    const items = long.slice(0, MAX_QUOTED).map((p) => `- "${opening(stripBullet(p.text))}" (${p.words} words)`).join("\n");
+    set("paragraphs", `Shorten these to under 40 words per bullet (60 per paragraph):\n${items}`);
   }
 
   if (status("space") === "warn") {
     const wordCount = (line: string) => line.split(/\s+/).filter(Boolean).length; // as the check counts them
     const orphans = ctx.paras.filter((p) => p.lines.length >= 2 && wordCount(p.lines[p.lines.length - 1]) <= 2
       && wordCount(p.lines[p.lines.length - 2]) >= 6);
-    const empty = ctx.spaceIssues.some((x) => /empty/.test(x));
+    const empty = ctx.spaceIssues.filter((x) => /empty/i.test(x));
     const parts: string[] = [];
     if (orphans.length) parts.push(`Trim each of these by a few words so its last line isn't left with 1–2 words:\n${quoteList(orphans.map((p) => stripBullet(p.text)))}`);
-    if (empty) parts.push("My CV has empty space. Ask me up to 5 questions about achievements or projects I could add.");
+    const emptyList = empty.slice(0, 3).join("; ") + (empty.length > 3 ? `; and ${empty.length - 3} more pages` : "");
+    if (empty.length) parts.push(`${emptyList}. Ask me up to 5 questions about achievements or projects I could add to fill it.`);
     if (!parts.length) parts.push(`My CV wastes space (${ctx.spaceIssues.join("; ")}). ${ASK_EDITOR}`);
     set("space", parts.join("\n\n"));
   }
 
   if (ctx.unsortedLists.length) {
-    set("alpha", `Reorder these lines alphabetically, changing nothing else:\n${ctx.unsortedLists.map((l) => `- ${l}`).join("\n")}`);
+    // long lists: the CV is attached, so naming the section is enough
+    const lists = ctx.unsortedLists.map((l) => {
+      const [section, order] = [l.slice(0, l.indexOf(":")), l.slice(l.indexOf(":") + 1).split("→")[0]];
+      const count = order.split(",").length;
+      return count > 6 ? `- my ${section} section (${count} lines)` : `- ${l}`;
+    });
+    set("alpha", `Reorder these lines alphabetically, changing nothing else:\n${lists.join("\n")}`);
   }
 
   if ((status("metrics") === "warn" || status("metrics") === "info") && ctx.unquantified.length) {
@@ -810,15 +840,14 @@ function attachFixes(checks: Check[], ctx: FixContext) {
     const withPronouns = ctx.paras.filter((p) => (p.text.match(PRONOUN_RE) ?? []).length > 0);
     set("pronouns", `Rewrite these without "I", "me" or "my", starting with action verbs:\n${quoteList(withPronouns.map((p) => stripBullet(p.text)))}`);
   }
-  if (ctx.personal.length) set("personal", `Which lines should I delete to remove: ${ctx.personal.join(", ")}?`);
+  if (ctx.personal.length) set("personal", `My CV includes my ${ctx.personal.join(", ")}. Which lines should I delete to remove them?`);
 
   if (status("ai") === "warn" || status("ai") === "info") {
-    const aiLike = ctx.paras.filter((p) => (p.text.match(AI_PHRASE_RE) ?? []).length > 0 || /—/.test(p.text)
-      || OUTCOME_CLAUSE_RE.test(p.text) || /\b\d[\d,.]*\+(?=[\s),.;]|$)/.test(p.text));
-    const fakeContact = ctx.signals.some((x) => x.startsWith("Placeholder contact"));
-    const humanize = "Humanize my CV so it doesn't read as AI-written: no em-dashes (—) or '·' separators, no buzzwords (spearheaded, leveraged, robust, seamless…), no 'N+' figures (write 'over 300', not '300+'), no 'did X, resulting in Y' pattern, and vary sentence length and structure.";
-    const lines = aiLike.length ? ` Start with these:\n${quoteList(aiLike.map((p) => stripBullet(p.text)))}` : "";
-    set("ai", humanize + lines + (fakeContact ? "\nAlso remind me to replace the placeholder contact details." : ""));
+    const signs = ctx.signals.map((sign) => {
+      const action = AI_FIXES.find(([re]) => re.test(sign))?.[1];
+      return `- ${sign}${action ? ` → ${action}` : ""}`;
+    });
+    set("ai", `Humanize my CV so it doesn't read as AI-written. Fix these signs:\n${signs.join("\n")}\nKeep the wording plain and vary sentence length.`);
   }
 
   for (const c of checks) {
@@ -904,9 +933,7 @@ function aiSignals(lines: Line[], paras: Para[], fullText: string, wordCount: nu
   const dots = (fullText.match(/ · /g) ?? []).length;
   if (dots >= 4) add(`${dots} '·' separators`);
 
-  // Formulaic metrics: "300+ clients", "from 58% to 87%"
-  const plusCounts = fullText.match(/\b\d[\d,.]*\+(?=[\s),.;]|$)/gm) ?? [];
-  if (plusCounts.length >= 3) add(`${plusCounts.length} 'N+' figures: ${plusCounts.slice(0, 5).join(", ")}`);
+  // Formulaic metrics: "from 58% to 87%"
   const fromTo = fullText.match(/\bfrom\s+~?[\d$£€][^\s]*\s+to\s+(?:under\s+|over\s+|~)?[\d$£€][^\s,;]*/gi) ?? [];
   if (fromTo.length >= 2) add(`${fromTo.length} 'from X to Y' metrics, e.g. '${fromTo[0]}'`);
 
