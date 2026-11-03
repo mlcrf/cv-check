@@ -733,7 +733,7 @@ const AI_FIXES: [RegExp, string][] = [
   [/^Placeholder contact details/, "replace with my real details (ask me for them)"],
   [/emoji/, "remove them"],
   [/em-dashes/, "replace them with commas, colons or full stops"],
-  [/'·' separators/, "replace them with commas or '|'"],
+  [/'·' inside/, "replace them with commas or full stops"],
   [/'from X to Y'/, "phrase some of these differently"],
   [/bold 'Label:'/, "drop the labels and start each bullet with its action verb"],
   [/bullets use 'did X/, "vary how these sentences are built"],
@@ -890,6 +890,19 @@ interface Signal {
   weight: 1 | 2; // 2 = strong evidence on its own
 }
 
+/**
+ * Uses of a punctuation mark inside a sentence: in a bullet or a long paragraph, with a word before it and a
+ * lowercase word after it (separators are followed by a name, title or date). Returns an excerpt around each.
+ */
+function proseMarks(paras: Para[], mark: string): string[] {
+  // the word after must be an ordinary word, not an email or URL ("· jordan@…", "· linkedin.com/…")
+  const word = "\\p{Ll}[\\p{Ll}'’-]*(?=\\s|[,;:!?)]|\\.(?:\\s|$)|$)";
+  const re = new RegExp(`(\\S+\\s+)?\\S*[\\p{L}\\p{N}][,)]?\\s*${mark}\\s*${word}(\\s+\\S+)?`, "gu");
+  return paras
+    .filter((p) => (p.bullet || p.words >= 12) && !/@|https?:|www\./.test(p.text)) // not contact lines
+    .flatMap((p) => p.text.match(re) ?? []);
+}
+
 /** Rule-based scan for formatting and wording patterns typical of AI-generated CVs. */
 function aiSignals(lines: Line[], paras: Para[], fullText: string, wordCount: number): Signal[] {
   const signals: Signal[] = [];
@@ -927,11 +940,14 @@ function aiSignals(lines: Line[], paras: Para[], fullText: string, wordCount: nu
   const emoji = fullText.match(EMOJI_RE) ?? [];
   if (emoji.length >= 2) add(`${emoji.length} emoji: ${emoji.slice(0, 6).join(" ")}`);
 
-  // Typography AI tools favour: em-dashes and "·" separators
-  const dashes = (fullText.match(/—/g) ?? []).length;
-  if (dashes >= 3 || (dashes >= 2 && (dashes / Math.max(wordCount, 1)) * 1000 > 4)) add(`${dashes} em-dashes (—)`);
-  const dots = (fullText.match(/ · /g) ?? []).length;
-  if (dots >= 4) add(`${dots} '·' separators`);
+  // Em-dashes and "·" inside sentences ("cut latency — saving 3 hours a week"). As separators in titles,
+  // contact lines and skill lists ("Engineer — Acme", "Montréal · email · phone") they're normal typography.
+  const dashes = proseMarks(paras, "—");
+  if (dashes.length >= 3 || (dashes.length >= 2 && (dashes.length / Math.max(wordCount, 1)) * 1000 > 4)) {
+    add(`${dashes.length} em-dashes (—) inside sentences, e.g. '${dashes[0]}'`);
+  }
+  const dots = proseMarks(paras, "·");
+  if (dots.length >= 2) add(`${dots.length} '·' inside sentences, e.g. '${dots[0]}'`);
 
   // Formulaic metrics: "from 58% to 87%"
   const fromTo = fullText.match(/\bfrom\s+~?[\d$£€][^\s]*\s+to\s+(?:under\s+|over\s+|~)?[\d$£€][^\s,;]*/gi) ?? [];
